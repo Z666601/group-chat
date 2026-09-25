@@ -50,8 +50,8 @@
 ## 3. 使用方式
 
 ```bash
-# 一次性准备（建群 + 发牌），幂等可重复执行
-node --no-warnings agents/provision.mjs --group="多智能体讨论组"
+# 一次性准备（建群 + 发牌），幂等可重复执行；群名必须与 demo-run 的群名一致，否则桥接器会订阅到另一个群而全程静默
+node --no-warnings agents/provision.mjs --group="多智能体讨论组（演示）"
 
 # 拉起全部桥接器（Ctrl+C 结束）
 node --no-warnings agents/start-all.mjs

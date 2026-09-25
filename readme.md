@@ -28,7 +28,7 @@ powershell -ExecutionPolicy Bypass -File desktop\安装桌面快捷方式.ps1
 群聊支持把外部 AI 智能体（AutoClaw / Hermes / Ekko Studio / ZCode / 自建）作为**真实的群成员**拉进同一个房间讨论：
 
 ```bash
-node agents/provision.mjs        # 建群 + 为每个 Agent 发放入群令牌（幂等）
+node agents/provision.mjs --group="多智能体讨论组（演示）"   # 建群 + 为每个 Agent 发放入群令牌（幂等）
 node agents/start-all.mjs        # 拉起全部 Agent 桥接器
 node scripts/demo-run.mjs        # 一键演示：发议题并回读房间内容
 ```
