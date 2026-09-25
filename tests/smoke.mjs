@@ -55,20 +55,31 @@ function openWs(token) {
       }
     });
     ws.addEventListener('open', () => {
+      const next = async (timeoutMs = 3000, filter = null) => {
+        const deadline = Date.now() + timeoutMs;
+        for (;;) {
+          const idx = filter ? buffer.findIndex(filter) : buffer.length ? 0 : -1;
+          if (idx >= 0) return buffer.splice(idx, 1)[0];
+          if (Date.now() > deadline) throw new Error('ws timeout waiting for message');
+          await new Promise((r) => setTimeout(r, 15));
+        }
+      };
       resolve({
         ws,
         send: (obj) => ws.send(JSON.stringify(obj)),
-        buffer,
-        // 轮询缓冲取第一条匹配消息（取走后从缓冲移除），超时抛错
-        next: async (timeoutMs = 3000, filter = null) => {
-          const deadline = Date.now() + timeoutMs;
-          for (;;) {
-            const idx = filter ? buffer.findIndex(filter) : buffer.length ? 0 : -1;
-            if (idx >= 0) return buffer.splice(idx, 1)[0];
-            if (Date.now() > deadline) throw new Error('ws timeout waiting for message');
-            await new Promise((r) => setTimeout(r, 15));
+        // 发一条并等 ack，返回是否落库（被限流/拒绝时返回 false）
+        sendNow: async (groupId, text, timeoutMs = 3000) => {
+          const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          ws.send(JSON.stringify({ type: 'send', groupId, clientMsgId: id, text }));
+          try {
+            return (await next(timeoutMs, (m) => m.type === 'ack' && m.clientMsgId === id)).ok !== false;
+          } catch {
+            return false;
           }
         },
+        buffer,
+        // 轮询缓冲取第一条匹配消息（取走后从缓冲移除），超时抛错
+        next,
         close: () => {
           try {
             ws.close();
@@ -331,6 +342,65 @@ try {
   const listB = await api('/groups', { token: tokenB });
   const rowB = (listB.data.groups || []).find((g) => g.id === groupId);
   check('未读数与 last_read_seq 一致', Number(rowB?.unread) === Math.max(0, Number(rowB?.latestSeq) - readSeq), `unread=${rowB?.unread}`);
+
+  console.log('\n── 10c. 断线期间收到消息后游标不错位 ────────');
+  // B 断开（wsB2）→ A 在 B 离线期间连发两条 → B 带 sinceSeq 重连补齐并上报已读。
+  const bBefore = await api(`/groups/${groupId}/messages?limit=100`, { token: tokenB });
+  const localView = bBefore.data.messages.slice();
+  const bSince = bBefore.data.latestSeq;
+  wsB2.close();
+  await new Promise((r) => setTimeout(r, 900));
+  const offA1 = await wsA.sendNow(groupId, 'B离线·第一条');
+  const offA2 = await wsA.sendNow(groupId, 'B离线·第二条');
+  const bLatest = (await api(`/groups/${groupId}/messages?limit=1`, { token: tokenB })).data.latestSeq;
+  const wsB3 = await openWs(tokenB);
+  await wsB3.next(3000, (m) => m.type === 'ready');
+  wsB3.send({ type: 'subscribe', groupId, sinceSeq: bSince });
+  const bReplay = [];
+  for (;;) {
+    const m = await wsB3.next(2500);
+    if (m.type === 'message') bReplay.push(m.message);
+    if (m.type === 'subscribed') break;
+  }
+  const merged = localView.concat(bReplay);
+  check(
+    '重连补齐的条数与离线期间一致',
+    bReplay.length === bLatest - bSince && bReplay.length === 2,
+    `离线期 ack=${offA1}/${offA2}, since=${bSince}, latest=${bLatest}, 补齐=${bReplay.length}`,
+  );
+  check(
+    '补齐与离线前视图合并后无重复 seq/id',
+    new Set(merged.map((m) => m.seq)).size === merged.length && new Set(merged.map((m) => m.id)).size === merged.length,
+    `合并=${merged.length}, 唯一seq=${new Set(merged.map((m) => m.seq)).size}`,
+  );
+  check('补齐的 seq 是断线后的连续尾段', bReplay.every((m, i) => m.seq === bSince + i + 1), `${bReplay.map((m) => m.seq).join(',')}`);
+  const lastBSeq = bReplay.length ? bReplay[bReplay.length - 1].seq : bSince;
+  wsB3.send({ type: 'read', groupId, seq: lastBSeq });
+  await new Promise((r) => setTimeout(r, 250));
+  const detailB = await api(`/groups/${groupId}`, { token: tokenA });
+  const memberB2 = (detailB.data.members || []).find((m) => m.id === userB.id);
+  check('离线重连后 last_read_seq 精确等于 latestSeq', Number(memberB2?.lastReadSeq) === bLatest, `lastReadSeq=${memberB2?.lastReadSeq}, latest=${bLatest}`);
+  const listB2 = await api('/groups', { token: tokenB });
+  const rowB2 = (listB2.data.groups || []).find((g) => g.id === groupId);
+  check('补齐并上报后本人未读归零', Number(rowB2?.unread) === 0, `unread=${rowB2?.unread}`);
+  // 同一游标再报一次不应再向他人广播（前端「已读 x/n」只应变化一次）
+  const isBReceipt = (m) => m.type === 'read-receipt' && m.userId === userB.id;
+  let firstReceipt = null;
+  try {
+    firstReceipt = await wsA.next(2000, isBReceipt);
+  } catch {
+    /* 未收到 */
+  }
+  check('补齐后的首次 read 只广播一条回执', !!firstReceipt && firstReceipt.seq === lastBSeq, firstReceipt ? `seq=${firstReceipt.seq}` : '未收到');
+  wsB3.send({ type: 'read', groupId, seq: lastBSeq });
+  let dupReceipt = null;
+  try {
+    dupReceipt = await wsA.next(900, isBReceipt);
+  } catch {
+    /* 预期收不到 */
+  }
+  check('同游标重复 read 帧不再二次广播', dupReceipt === null);
+  wsB3.close();
 
   // 回归防护：从 AI 会话终端拉起桥接器时，SDK 入口标记会让 qoderclicn 以 exit=4 崩掉
   const probeOut = await new Promise((resolve) => {
