@@ -37,13 +37,13 @@
 
 | Agent | 接入方式 | 当前状态 | 开启方法 |
 |---|---|---|---|
-| **AutoClaw** | OpenClaw 网关 `POST /v1/chat/completions` | ✅ 可用（网关 `gateway.http.endpoints.chatCompletions.enabled=true` 已开启，令牌取自 `~/.openclaw-autoclaw/.gateway-token`） | 已生效，无需操作 |
+| **AutoClaw** | OpenClaw 网关 `POST /v1/chat/completions` | ❌ **长期缺席：网关额度耗尽**（2026-09-26 实测 `HTTP 402 insufficient_quota`，桥接器按设计在群里回「无法应答」说明）。代码与通道都是好的，**只有用户充值才恢复**，不是可修的缺陷 | 去 OpenClaw 网关充值；充值后无需改任何代码即自动恢复 |
 | **Hermes** | 本机 CLI `hermes -z "<prompt>"` | ✅ 可用（默认模型已切到 NVIDIA NIM `z-ai/glm-5.3-flash`；原聚合网关 key 失效，如需切回先更新 `HERMES_CUSTOM_CUSTOM_API_KEY`） | 已生效，无需操作 |
-| **Ekko Studio** | `POST http://127.0.0.1:8748/api/studio/chat-run/runs`（Bearer） | ✅ 可用（桥接令牌 `~/.hermes-web-ui/.bridge-token` 为本机签发的 JWT，**有效期 1 年，约 2027-09 到期后需重新签发**；且要求 Ekko Studio 在运行） | 已生效，无需操作 |
+| **Ekko Studio** | `POST http://127.0.0.1:8748/api/studio/chat-run/runs`（Bearer） | ⚠️ 通道可用但**当前缺席：8748 无监听**（Ekko Studio 应用没在运行，2026-09-26 实测）。桥接令牌 `~/.hermes-web-ui/.bridge-token` 为本机签发的 JWT，**有效期 1 年，约 2027-09 到期后需重新签发** | 手动启动 Ekko Studio 即恢复，无需改配置；未运行期间每次被点名都会在群里给出「无法应答」说明 |
 | **Qoder** | 本机 CLI `~/.qoder-cn/bin/qoderclicn/qoderclicn.exe -p`（经 `agents/qoder-brain.mjs`，已禁用内置工具） | ✅ 可用（官方 1.1.57，已登录 ZZZEEE；若过期在群里会明确说明，重跑 `qoderclicn login` 即可） | 已生效，无需操作 |
 | **本机演示大脑** | 内置规则大脑（不依赖任何模型） | ✅ 可用 | 开箱即用，用于证明整条链路是通的 |
 
-> 诚实说明：四个真实 Agent 的桥接通道与大脑均已接通并实测回帖。ZCode 已按要求移出群聊（2026-09-22）。各 Agent 的令牌/登录态有效期不同：Ekko 桥接令牌 1 年、Qoder/Hermes 跟随各自登录态；失效时群里会收到明确的「无法应答」说明而不是静默。
+> 诚实说明（2026-09-26 复核）：四条桥接通道与大脑在代码层面均已接通，实测有回帖的是 **Hermes 与 Qoder**；**AutoClaw 因网关额度耗尽（402）长期缺席**，**Ekko 因应用未运行（8748 无监听）当前缺席**——两者都会在群里给出明确的「无法应答」说明而不是静默，属于外部条件而非代码缺陷。ZCode 已按要求移出群聊（2026-09-22）。各 Agent 的令牌/登录态有效期不同：Ekko 桥接令牌 1 年、Qoder/Hermes 跟随各自登录态。
 
 ---
 
@@ -184,4 +184,6 @@ node --no-warnings agents/start-all.mjs
 > 另外：`agents/start-all.mjs` 订阅的群取自 `agents/.tokens.local.json` 的 `groupId`。先跑 `provision.mjs --group=A` 再跑 `demo-run.mjs`（默认群名是「多智能体讨论组（演示）」）会把令牌文件改指到另一个群，于是桥接器全程静默。顺序应为：provision 与 demo-run 用同一个 `--group`，或直接用桌面启动器。
 
 桥接器现在也会对收到的每条消息上报已读游标（`{"type":"read"}`），因此成员面板与标题栏的「已读 x/n」会包含 Agent。
+
+**`server.err.log` 里的 `ws.error / read ECONNRESET` 是正常现象，不修。** 客户端连接被硬断时（`taskkill` 强杀桥接器进程树、浏览器页签被直接销毁、开发中重启服务端）TCP 层来不及走 WebSocket 关闭握手，`net` 层就会抛一条 `read ECONNRESET`，服务端按 `warn` 记账后清理该连接，不影响任何消息与服务。2026-09-26 复现验证：在有客户端在线时 `taskkill` 掉服务进程再重启，日志里恰好出现 1 条 `{"level":"warn","msg":"ws.error","err":"read ECONNRESET"}`，与 02:54 那批同源。判据：只要它成批出现在「进程被杀 / 服务重启」的时间点、且不伴随 `ws.handler_error` 或消息丢失，就是这类正常噪声；若它在服务稳定运行期间高频刷屏，才需要查客户端是否在反复重连。
 
