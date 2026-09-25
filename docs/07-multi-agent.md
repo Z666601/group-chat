@@ -182,6 +182,8 @@ node --no-warnings agents/start-all.mjs
 双击桌面「群聊」走的是 `desktop\start.ps1`，不受此影响。判据：`data\agents.log` 里 `[qoder] 大脑失败： ... exit=4` 即命中本条；若打的是 AutoClaw 且日志出现 `HTTP 402 ... Insufficient balance`，那是网关额度用尽，需要充值而不是改代码。
 
 > 另外：`agents/start-all.mjs` 订阅的群取自 `agents/.tokens.local.json` 的 `groupId`。先跑 `provision.mjs --group=A` 再跑 `demo-run.mjs`（默认群名是「多智能体讨论组（演示）」）会把令牌文件改指到另一个群，于是桥接器全程静默。顺序应为：provision 与 demo-run 用同一个 `--group`，或直接用桌面启动器。
+>
+> 善后记录（2026-09-26）：上述误建产生的 0 消息群「多智能体讨论组」`grp_XqjScfTwxvhs` 已按「解散不删」处置——走应用自己的 `DELETE /api/groups/:id`（群主令牌）→ `{"ok":true}`，台账落 `group_dissolve` 记录并带 groupId，群行与成员行保留在库中（应用内部只把 `status` 置为 dissolved，全程未执行任何裸 SQL、未打开过 db 文件），再读其消息返回 410 `group_dissolved`。注意：已解散的群不再出现在 `/api/groups` 列表里，所以 `provision.mjs` 按群名找不到「多智能体讨论组」时会**另建一个新群**；要续用现有演示群请显式带 `--group="多智能体讨论组（演示）"`。
 
 桥接器现在也会对收到的每条消息上报已读游标（`{"type":"read"}`），因此成员面板与标题栏的「已读 x/n」会包含 Agent。
 
