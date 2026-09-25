@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>群聊</title>
+<meta name="description" content="自建群聊：实时消息、历史回溯、断线补齐、成员与权限管理">
+<link rel="stylesheet" href="/styles.css?v=3">
+</head>
+<body>
+<a class="skip-link" href="#composer-input">跳到输入框</a>
+
+<!-- ── 登录 / 注册 ───────────────────────────────── -->
+<main id="auth-view" class="auth" hidden>
+  <div class="auth-box">
+    <h1 class="auth-title">群聊</h1>
+    <p class="muted" id="auth-hint">登录后即可建群、邀请成员、实时收发消息。</p>
+
+    <div class="tabs" role="tablist" aria-label="登录或注册">
+      <button class="tab" role="tab" id="tab-login" aria-selected="true" data-mode="login">登录</button>
+      <button class="tab" role="tab" id="tab-register" aria-selected="false" data-mode="register">注册</button>
+    </div>
+
+    <form id="auth-form" novalidate>
+      <div class="field">
+        <label for="f-username">用户名</label>
+        <input id="f-username" name="username" autocomplete="username" required
+               placeholder="3-24 位字母、数字或下划线" aria-describedby="auth-error">
+      </div>
+      <div class="field" id="field-displayname" hidden>
+        <label for="f-displayname">昵称</label>
+        <input id="f-displayname" name="displayName" autocomplete="nickname"
+               placeholder="群内显示的名字，1-32 位">
+      </div>
+      <div class="field">
+        <label for="f-password">密码</label>
+        <input id="f-password" name="password" type="password" autocomplete="current-password"
+               required placeholder="至少 8 位" aria-describedby="auth-error">
+      </div>
+      <p id="auth-error" class="error" role="alert" aria-live="assertive"></p>
+      <button type="submit" class="btn btn-primary" id="auth-submit">登录</button>
+    </form>
+    <p class="muted small">首次使用请先切到「注册」创建账号。</p>
+  </div>
+</main>
+
+<!-- ── 主应用 ─────────────────────────────────────── -->
+<div id="app-view" class="app" hidden>
+  <header class="topbar">
+    <button class="btn btn-ghost icon-btn" id="btn-toggle-sidebar" aria-label="打开会话列表" aria-expanded="false">☰</button>
+    <div class="topbar-main">
+      <h1 class="group-title" id="group-title">选择一个群</h1>
+      <div class="group-meta" id="group-meta"></div>
+    </div>
+    <div class="topbar-right">
+      <span class="conn" id="conn-state" role="status" aria-live="polite" title="实时连接状态">
+        <span class="conn-dot" aria-hidden="true"></span><span class="conn-text">连接中</span>
+      </span>
+      <button class="btn btn-ghost icon-btn" id="btn-toggle-members" aria-label="显示成员列表" aria-expanded="false">成员</button>
+      <button class="btn btn-ghost" id="btn-logout" title="退出登录">退出</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- 侧栏 -->
+    <aside class="sidebar" id="sidebar" aria-label="会话列表">
+      <div class="me" id="me-box"></div>
+
+      <div class="sidebar-actions">
+        <button class="btn btn-primary btn-block" id="btn-create-group">新建群聊</button>
+        <button class="btn btn-block" id="btn-join-group">通过邀请码加入</button>
+      </div>
+
+      <div class="sidebar-section-title">我的群聊 <span id="group-count" class="muted"></span></div>
+      <ul class="group-list" id="group-list" role="list"></ul>
+      <p class="empty-state" id="group-empty" hidden>还没有群聊。点上面的「新建群聊」开始，或让同事把邀请码发给你。</p>
+    </aside>
+
+    <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
+
+    <!-- 主区 -->
+    <section class="main" aria-label="消息区">
+      <div class="messages" id="messages" tabindex="0" role="log" aria-live="polite" aria-relevant="additions">
+        <p class="empty-state" id="messages-empty" hidden>这里还没有消息，说点什么吧。</p>
+      </div>
+      <div class="loadmore" id="loadmore" hidden>
+        <button class="btn btn-ghost" id="btn-load-older">加载更早的消息</button>
+      </div>
+
+      <form class="composer" id="composer">
+        <label class="sr-only" for="composer-input">消息输入框</label>
+        <textarea id="composer-input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行" maxlength="2000" disabled></textarea>
+        <div class="composer-side">
+          <label class="btn btn-ghost file-btn" for="file-input" title="发送图片">
+            图片
+            <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+          </label>
+          <button class="btn btn-primary" type="submit" id="btn-send" disabled>发送</button>
+        </div>
+      </form>
+      <p class="composer-note muted" id="composer-note"></p>
+    </section>
+
+    <!-- 成员面板 -->
+    <aside class="members" id="members-panel" aria-label="成员列表" hidden>
+      <div class="members-head">
+        <span>成员</span>
+        <button class="btn btn-ghost icon-btn" id="btn-close-members" aria-label="关闭成员列表">×</button>
+      </div>
+      <div class="members-actions" id="members-actions"></div>
+      <ul class="member-list" id="member-list" role="list"></ul>
+    </aside>
+  </div>
+</div>
+
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+<script type="module" src="/app.js?v=3"></script>
+</body>
+</html>

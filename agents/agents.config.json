@@ -1,0 +1,122 @@
+{
+  "server": "http://127.0.0.1:8787",
+  "wsPath": "/ws",
+  "contextMessages": 12,
+  "replyCooldownMs": 2500,
+  "maxRepliesPerMinute": 8,
+  "maxAgentChain": 3,
+  "agents": [
+    {
+      "key": "autoclaw",
+      "name": "AutoClaw",
+      "avatar": "🤖",
+      "trigger": "mention",
+      "replyToAgents": false,
+      "intro": "我是 AutoClaw，可以通过 OpenClaw 网关的模型接口参与讨论。",
+      "supportsModel": true,
+      "modelArgs": [
+        "x-openclaw-model: {model}"
+      ],
+      "brain": {
+        "type": "http",
+        "url": "http://127.0.0.1:18789/v1/chat/completions",
+        "tokenFile": "C:/Users/34288/.openclaw-autoclaw/.gateway-token",
+        "headers": {
+          "content-type": "application/json",
+          "x-openclaw-model": "{model}"
+        },
+        "body": {
+          "model": "openclaw",
+          "messages": [
+            {
+              "role": "user",
+              "content": "{prompt}"
+            }
+          ]
+        },
+        "responsePath": "choices.0.message.content",
+        "timeoutMs": 180000
+      },
+      "unavailable": "无法接入：OpenClaw 网关 /v1/chat/completions 不可用（检查网关是否运行、chatCompletions 端点是否开启）。"
+    },
+    {
+      "key": "hermes",
+      "name": "Hermes",
+      "avatar": "🔮",
+      "trigger": "mention",
+      "replyToAgents": false,
+      "intro": "我是 Hermes Agent，通过本机 CLI 参与讨论。",
+      "supportsModel": true,
+      "modelArgs": [
+        "-m",
+        "{model}"
+      ],
+      "brain": {
+        "type": "cmd",
+        "command": "C:/Users/34288/AppData/Local/hermes/bin/hermes.exe",
+        "args": [
+          "-z",
+          "{prompt}"
+        ],
+        "timeoutMs": 180000
+      },
+      "unavailable": "无法应答：Hermes 模型通道连接失败（`hermes -z` 返回 API call failed: Connection error），需要检查 Hermes 的模型/API Key 配置。"
+    },
+    {
+      "key": "ekko",
+      "name": "Ekko Studio",
+      "avatar": "🎛️",
+      "trigger": "mention",
+      "replyToAgents": false,
+      "intro": "我是 Ekko Studio，通过本机 8748 端口的工作台接口参与讨论。",
+      "supportsModel": true,
+      "brain": {
+        "type": "http",
+        "url": "http://127.0.0.1:8748/api/studio/chat-run/runs",
+        "tokenFile": "C:/Users/34288/.hermes-web-ui/.bridge-token",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "input": "{prompt}",
+          "model": "{model}"
+        },
+        "responsePath": "output",
+        "timeoutMs": 240000
+      },
+      "unavailable": "无法应答：Ekko Studio 接口不可用（需 Ekko Studio 正在运行且桥接令牌有效；令牌有效期至 2027-09，过期后需重新签发）。"
+    },
+    {
+      "key": "demobrain",
+      "name": "本机演示大脑",
+      "avatar": "🧪",
+      "trigger": "all",
+      "replyToAgents": false,
+      "intro": "我是本机演示大脑：不依赖任何外部模型，用于证明「多智能体同群讨论」这条链路是通的。",
+      "supportsModel": false,
+      "brain": {
+        "type": "local"
+      }
+    },
+    {
+      "key": "qoder",
+      "name": "Qoder",
+      "avatar": "🟣",
+      "trigger": "mention",
+      "replyToAgents": false,
+      "intro": "我是 Qoder，通过本机 qodercli 参与讨论。",
+      "supportsModel": false,
+      "brain": {
+        "type": "cmd",
+        "command": "C:/Users/34288/AppData/Local/hermes/node/node.exe",
+        "args": [
+          "--no-warnings",
+          "agents/qoder-brain.mjs",
+          "{prompt}"
+        ],
+        "timeoutMs": 180000
+      },
+      "unavailable": "无法应答：Qoder CLI（qoderclicn）调用失败，请确认其登录状态（运行 qoderclicn login）。"
+    }
+  ]
+}

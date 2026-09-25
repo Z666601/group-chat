@@ -1,0 +1,41 @@
+{
+  "capturedAt": "2026-09-15T14:32:27.142Z",
+  "app": "http://127.0.0.1:8787",
+  "browser": "Chrome/152.0.7977.83",
+  "stateAfterLogin": "{\"authHidden\":true,\"appHidden\":false,\"title\":\"选择一个群\",\"conn\":\"online\",\"groups\":[\"🧠 多智能体讨论组（演示）\",\"🧠 多智能体讨论组\"]}",
+  "stateAfterGroup": "{\"title\":\"🧠 多智能体讨论组（演示）\",\"meta\":\"6 位成员 · 你是群主\",\"messages\":8,\"texts\":[\"上线前最后一个议题：这套群聊系统还差什么？@AutoClaw @Hermes @Ekko Studio @ZCode 各给一条最关键意见。\",\"无法应答：Ekko Studio 的 API 需要 Bearer Token（本机 `.hermes-web-ui/.token` 返回 401），需要在 Ekko Studio 里生成/刷新 API Token 后填入配置。\",\"无法接入：OpenClaw 网关的 `/v1/chat/completions` 属受保护配置，需要你手动把 `gateway.http.endpoints.chatCompletions.enabled` 设为 true 并重启网关。\",\"【本机演示大脑 · 22:16】就「上线前最后一个议题：这套群聊系统还差什么？@AutoClaw @Hermes @Ekko Studio @ZCode 各」我补充三点：\\n1. 视角：时间 是这里最需要先钉住的维度。\\n2. 判断：先把最小可验证路径跑通，再叠加复杂度；不要在上线前一次性引入全部变量。\\n3. 建议：给出一个可检查的验收口径，并明确谁在什么时候产出证据。\\n（说明：本回复由内置规则大脑生成，用于证明多智能体同群链路可用；接入真实模型后替换即可。）\"],\"conn\":\"online\"}",
+  "memberState": "{\"members\":[\"讨论组管理员（我）群主\",\"🤖 AutoClaw智能体模型默认模型claude-fable-5claude-fable-5.1claude-haiku-4.5claude-opus-4.5claude-opus-4.6claude-opus-4.7claude-opus-4.8claude-opus-5claude-sonnet-4.5claude-sonnet-4.6claude-sonnet-5deepseek-v4-flashdeepseek-v4-flash-freedeepseek-v4-flash-vision-expdeepseek-v4-prodefaultgemini-3-flashgemini-3.1-progemini-3.5-flashgemini-3.5-flash-litegemini-3.6-flashgemini-3.8-flashglm-5.1glm-5.2glm-5.3glm-5.3-flashGLM-5.3-flashgpt-5-minigpt-5-nanogpt-5.2gpt-5.4gpt-5.4-minigpt-5.4-nanogpt-5.4-progpt-5.5gpt-5.5-instantgpt-5.6-lunagpt-5.6-solgpt-5.6-terragpt-6-astrahy3hy4-previewkimi-k2.6kimi-k3ling-3.0-flash-fin-freelivemimo-v2.5mimo-v2.5-freemimo-v2.5-prominimax-m2.7minimax-m3muse-spark-1.2-contributor-freemuse-spark-1.3-contributor-freenemotron-3-ultra-freenemotron-3.5-lightning-freenvidiaopencode-freeqwen3.8-27bqwen3.8-flashqwen3.8-maxz-ai/glm-5.3-free移除\",\"🔮 Hermes智能体模型默认模型claude-fable-5claude-fable-5.1claude-haiku-4.5claude-opus-4.5claude-opus-4.6claude-opus-4.7claude-opus-4.8claude-opus-5claude-sonnet-4.5claude-sonnet-4.6claude-sonnet-5deepseek-v4-flashdeepseek-v4-flash-freedeepseek-v4-flash-vision-expdeepseek-v4-prodefaultgemini-3-flashgemini-3.1-progemini-3.5-flashgemini-3.5-flash-litegemini-3.6-flashgemini-3.8-flashglm-5.1glm-5.2glm-5.3glm-5.3-flashGLM-5.3-flashgpt-5-minigpt-5-nanogpt-5.2gpt-5.4gpt-5.4-minigpt-5.4-nanogpt-5.4-progpt-5.5gpt-5.5-instantgpt-5.6-lunagpt-5.6-solgpt-5.6-terragpt-6-astrahy3hy4-previewkimi-k2.6kimi-k3ling-3.0-flash-fin-freelivemimo-v2.5mimo-v2.5-freemimo-v2.5-prominimax-m2.7minimax-m3muse-spark-1.2-contributor-freemuse-spark-1.3-contributor-freenemotron-3-ultra-freenemotron-3.5-lightning-freenvidiaopencode-freeqwen3.8-27bqwen3.8-flashqwen3.8-maxz-ai/glm-5.3-free移除\",\"🎛️ Ekko Studio智能体模型默认模型claude-fable-5claude-fable-5.1claude-haiku-4.5claude-opus-4.5claude-opus-4.6claude-opus-4.7claude-opus-4.8claude-opus-5claude-sonnet-4.5claude-sonnet-4.6claude-sonnet-5deepseek-v4-flashdeepseek-v4-flash-freedeepseek-v4-flash-vision-expdeepseek-v4-prodefaultgemini-3-flashgemini-3.1-progemini-3.5-flashgemini-3.5-flash-litegemini-3.6-flashgemini-3.8-flashglm-5.1glm-5.2glm-5.3glm-5.3-flashGLM-5.3-flashgpt-5-minigpt-5-nanogpt-5.2gpt-5.4gpt-5.4-minigpt-5.4-nanogpt-5.4-progpt-5.5gpt-5.5-instantgpt-5.6-lunagpt-5.6-solgpt-5.6-terragpt-6-astrahy3hy4-previewkimi-k2.6kimi-k3ling-3.0-flash-fin-freelivemimo-v2.5mimo-v2.5-freemimo-v2.5-prominimax-m2.7minimax-m3muse-spark-1.2-contributor-freemuse-spark-1.3-contributor-freenemotron-3-ultra-freenemotron-3.5-lightning-freenvidiaopencode-freeqwen3.8-27bqwen3.8-flashqwen3.8-maxz-ai/glm-5.3-free移除\",\"⌨️ ZCode智能体模型默认模型claude-fable-5claude-fable-5.1claude-haiku-4.5claude-opus-4.5claude-opus-4.6claude-opus-4.7claude-opus-4.8claude-opus-5claude-sonnet-4.5claude-sonnet-4.6claude-sonnet-5deepseek-v4-flashdeepseek-v4-flash-freedeepseek-v4-flash-vision-expdeepseek-v4-prodefaultgemini-3-flashgemini-3.1-progemini-3.5-flashgemini-3.5-flash-litegemini-3.6-flashgemini-3.8-flashglm-5.1glm-5.2glm-5.3glm-5.3-flashGLM-5.3-flashgpt-5-minigpt-5-nanogpt-5.2gpt-5.4gpt-5.4-minigpt-5.4-nanogpt-5.4-progpt-5.5gpt-5.5-instantgpt-5.6-lunagpt-5.6-solgpt-5.6-terragpt-6-astrahy3hy4-previewkimi-k2.6kimi-k3ling-3.0-flash-fin-freelivemimo-v2.5mimo-v2.5-freemimo-v2.5-prominimax-m2.7minimax-m3muse-spark-1.2-contributor-freemuse-spark-1.3-contributor-freenemotron-3-ultra-freenemotron-3.5-lightning-freenvidiaopencode-freeqwen3.8-27bqwen3.8-flashqwen3.8-maxz-ai/glm-5.3-free移除\",\"🧪 本机演示大脑智能体模型：不适用（内置大脑）移除\"]}",
+  "afterSend": "{\"messages\":10,\"last\":\"🧪本机演示大脑BOT22:32【本机演示大脑 · 22:32】就「这是通过真实界面发送的一条消息。」我补充三点：\\n1. 视角：方案 是这里最需要先钉住的维度。\\n2. 判断：先把最小可验证路径跑通，再叠加复杂度；不要在上线前一次性引入全部变量。\\n3. 建议：给出一个可检查的验收口径，并明确谁在什么时候产出证据。\\n（说明：本回复由内置规则大脑生成，用于证明多智能体同群链路可用；接入真实模型后替换即可。）\"}",
+  "shots": [
+    {
+      "name": "01-login-desktop",
+      "file": "C:\\Users\\34288\\.openclaw-autoclaw\\workspace\\group-chat\\docs\\screenshots\\01-login-desktop.png",
+      "bytes": 37531
+    },
+    {
+      "name": "02-login-mobile",
+      "file": "C:\\Users\\34288\\.openclaw-autoclaw\\workspace\\group-chat\\docs\\screenshots\\02-login-mobile.png",
+      "bytes": 20057
+    },
+    {
+      "name": "03-chat-desktop",
+      "file": "C:\\Users\\34288\\.openclaw-autoclaw\\workspace\\group-chat\\docs\\screenshots\\03-chat-desktop.png",
+      "bytes": 111567
+    },
+    {
+      "name": "04-chat-members",
+      "file": "C:\\Users\\34288\\.openclaw-autoclaw\\workspace\\group-chat\\docs\\screenshots\\04-chat-members.png",
+      "bytes": 184013
+    },
+    {
+      "name": "05-chat-mobile",
+      "file": "C:\\Users\\34288\\.openclaw-autoclaw\\workspace\\group-chat\\docs\\screenshots\\05-chat-mobile.png",
+      "bytes": 121781
+    },
+    {
+      "name": "06-chat-after-send",
+      "file": "C:\\Users\\34288\\.openclaw-autoclaw\\workspace\\group-chat\\docs\\screenshots\\06-chat-after-send.png",
+      "bytes": 188218
+    }
+  ]
+}

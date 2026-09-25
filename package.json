@@ -1,0 +1,21 @@
+{
+  "name": "auto-group-chat",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "自建 Web 群聊：WebSocket 实时通道 + REST API + SQLite 持久化，零第三方依赖",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node --no-warnings server/index.mjs",
+    "dev": "node --no-warnings --watch server/index.mjs",
+    "migrate": "node --no-warnings scripts/migrate.mjs",
+    "test": "node --no-warnings tests/smoke.mjs",
+    "loadtest": "node --no-warnings tests/loadtest.mjs",
+    "drill": "node --no-warnings tests/rollback-drill.mjs",
+    "capture": "node --no-warnings scripts/capture.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
