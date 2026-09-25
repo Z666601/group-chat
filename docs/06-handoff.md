@@ -102,7 +102,7 @@ group-chat/
 ## 5. 验证方式
 
 ```bash
-npm test           # 48 项端到端断言（注册→建群→实时→越权→限流→重连→已读回执→SDK 环境污染→台账→解散）
+npm test           # 55 项端到端断言（注册→建群→实时→越权→限流→重连→已读回执→离线游标对齐→SDK 环境污染→台账→解散）
 npm run loadtest   # 500 连接 / 200 消息 容量基线
 ```
 
@@ -122,7 +122,7 @@ npm run loadtest   # 500 连接 / 200 消息 容量基线
 ### P1 — 消息可靠性
 - 落库与广播之间增加**发件箱（outbox）**或事件日志，确保进程崩溃后仍能补发
 - ~~已读回执~~ ✅ 已实现（2026-09-26）：客户端与 Agent 桥接器发 `{"type":"read","groupId","seq"}`，服务端只前进游标并在推进时向他人广播 `read-receipt`；前端在消息流插入「以下是未读」分割线，标题栏显示「已读 x/n」。见 `tests/smoke.mjs` 第 10b 节
-  - 真机收口（2026-09-26，隔离实例 `PORT=8899` + 独立 `DATA_DIR=data/ui-verify`，未触碰 `data/chat.db`）：以两个临时账号在浏览器里验证「断线期间别人发消息」→ 重连后标题栏「已读 0/1」，`.unread-sep` 恰好 1 条且夹在 seq 10 与 seq 11 之间（`sepPrevSeq=10, sepNextSeq=11`），13 个消息节点无重复 `data-seq`；服务端回读 `ui_alice.last_read_seq = 13 = latestSeq`，游标零错位。对端经裸 WebSocket 上报已读后，标题栏实时变为「已读 1/1」，且**连发两帧重复 read 只生效一次**（第二次不再广播）。`npm test` 48/48 零失败。
+  - 真机收口（2026-09-26，隔离实例 `PORT=8899` + 独立 `DATA_DIR=data/ui-verify`，未触碰 `data/chat.db`）：以两个临时账号在浏览器里验证「断线期间别人发消息」→ 重连后标题栏「已读 0/1」，`.unread-sep` 恰好 1 条且夹在 seq 10 与 seq 11 之间（`sepPrevSeq=10, sepNextSeq=11`），13 个消息节点无重复 `data-seq`；服务端回读 `ui_alice.last_read_seq = 13 = latestSeq`，游标零错位。对端经裸 WebSocket 上报已读后，标题栏实时变为「已读 1/1」，且**连发两帧重复 read 只生效一次**（第二次不再广播）。`npm test` 48/48 零失败。收口场景另已固化进 `tests/smoke.mjs` 第 10c 节（离线期连发 → 带 `sinceSeq` 重连补齐 → 游标精确对齐、无重复、重复 read 帧不二次广播），当前为 **55/55 零失败**。
   - 原始断言输出（页签截图不可用：内置浏览器报 `NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`，故以 `evaluate_script` 的 DOM 断言替代）。下面各行的**判定值均为原样返回**，只有过长的 seq 数组/节点序列用省略号略写中间项。取数方式：`#messages` 下子节点按 `className==='unread-sep'` 记为 UNREAD、其余按 `data-seq` 记为 mN。
     ```text
     # 断线期间对端发消息 → 重新进群（服务端此刻 last_read_seq=10 / latest=12）
