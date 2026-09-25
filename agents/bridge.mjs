@@ -18,6 +18,13 @@ const ROOT = path.resolve(__dirname, '..');
 const CONFIG_PATH = path.join(__dirname, 'agents.config.json');
 const TOKENS_PATH = path.join(__dirname, '.tokens.local.json');
 
+// 从 AI 会话终端里手动拉起桥接器时会继承 Qoder Agent SDK 的入口标记，
+// 子进程 qoderclicn 见到它就报 sdk_invalid_args 直接退出（exit=4），群里只剩「无法应答」。
+const SDK_POLLUTION = ['QODER_AGENT_SDK_ENTRYPOINT', 'QODER_AGENT_SDK_VERSION', 'QODERCLI_RUNTIME_PACKAGING'];
+const strippedEnv = SDK_POLLUTION.filter((k) => k in process.env);
+for (const k of strippedEnv) delete process.env[k];
+if (strippedEnv.length) console.log('[bridge] 已剥离 SDK 污染变量：', strippedEnv.join(', '));
+
 const args = process.argv.slice(2);
 const argOf = (name, def = null) => {
   const hit = args.find((a) => a === `--${name}` || a.startsWith(`--${name}=`));

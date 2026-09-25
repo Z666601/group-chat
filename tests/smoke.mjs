@@ -332,6 +332,32 @@ try {
   const rowB = (listB.data.groups || []).find((g) => g.id === groupId);
   check('未读数与 last_read_seq 一致', Number(rowB?.unread) === Math.max(0, Number(rowB?.latestSeq) - readSeq), `unread=${rowB?.unread}`);
 
+  // 回归防护：从 AI 会话终端拉起桥接器时，SDK 入口标记会让 qoderclicn 以 exit=4 崩掉
+  const probeOut = await new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--no-warnings', 'agents/bridge.mjs', '--key=__probe__'], {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        QODER_AGENT_SDK_ENTRYPOINT: 'sdk-ts',
+        QODER_AGENT_SDK_VERSION: '1.0.48',
+        QODERCLI_RUNTIME_PACKAGING: 'worker_mjs',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += String(d)));
+    child.stderr.on('data', (d) => (out += String(d)));
+    child.on('close', () => resolve(out));
+  });
+  check(
+    '桥接器启动即剥离 Qoder SDK 污染变量',
+    /已剥离 SDK 污染变量/.test(probeOut)
+      && probeOut.includes('QODER_AGENT_SDK_ENTRYPOINT')
+      && probeOut.includes('QODER_AGENT_SDK_VERSION')
+      && probeOut.includes('QODERCLI_RUNTIME_PACKAGING'),
+    probeOut.split('\n')[0].slice(0, 80),
+  );
+
   console.log('\n── 11. 后台台账与可观测性 ────────────────────');
   const auditDenied = await api('/api/admin/audit?type=authz_denied', { token: undefined, headers: { 'x-admin-token': ADMIN_TOKEN } });
   check('越权拦截已入台账', auditDenied.status === 200 && auditDenied.data.records.length >= 3, `记录数=${auditDenied.data.records?.length}`);
