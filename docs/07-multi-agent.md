@@ -183,7 +183,7 @@ node --no-warnings agents/start-all.mjs
 
 > 另外：`agents/start-all.mjs` 订阅的群取自 `agents/.tokens.local.json` 的 `groupId`。先跑 `provision.mjs --group=A` 再跑 `demo-run.mjs`（默认群名是「多智能体讨论组（演示）」）会把令牌文件改指到另一个群，于是桥接器全程静默。顺序应为：provision 与 demo-run 用同一个 `--group`，或直接用桌面启动器。
 >
-> 善后记录（2026-09-26）：上述误建产生的 0 消息群「多智能体讨论组」`grp_XqjScfTwxvhs` 已按「解散不删」处置——走应用自己的 `DELETE /api/groups/:id`（群主令牌）→ `{"ok":true}`，台账落 `group_dissolve` 记录并带 groupId，群行与成员行保留在库中（应用内部只把 `status` 置为 dissolved，全程未执行任何裸 SQL、未打开过 db 文件），再读其消息返回 410 `group_dissolved`。注意：已解散的群不再出现在 `/api/groups` 列表里，所以 `provision.mjs` 按群名找不到「多智能体讨论组」时会**另建一个新群**；要续用现有演示群请显式带 `--group="多智能体讨论组（演示）"`。
+> 善后记录（2026-09-26）：上述误建产生的两个 0 消息群已按「解散不删」处置——先解了 `grp_XqjScfTwxvhs`（旧的空「多智能体讨论组」），经复核指出真正会出现在群列表里的是 `grp_uXUk-ufDY1cK`「（可解散）误建的空群」，也已一并解散。两次都走应用自己的 `DELETE /api/groups/:id`（群主令牌）→ `{"ok":true}`，台账落 2 条 `group_dissolve` 记录并带各自 groupId，群行与成员行保留在库中（应用内部只把 `status` 置为 dissolved，全程未执行任何裸 SQL、未打开过 db 文件），再读其消息返回 410 `group_dissolved`；处置后群列表只剩「多智能体讨论组（演示）」，`/healthz` 的 `db.groups` 仍为 3、`messages` 仍为 61。注意：已解散的群不再出现在 `/api/groups` 列表里，所以 `provision.mjs` 按群名找不到目标群时会**另建一个新群**；请始终显式带 `--group="多智能体讨论组（演示）"`（`desktop/start.ps1` 已经这样写了）。
 
 桥接器现在也会对收到的每条消息上报已读游标（`{"type":"read"}`），因此成员面板与标题栏的「已读 x/n」会包含 Agent。
 
