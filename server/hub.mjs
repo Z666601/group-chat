@@ -171,8 +171,17 @@ export function createHub({ log, metrics, limits = {} }) {
   function onRead(conn, msg) {
     const groupId = String(msg.groupId || '');
     const seq = Number(msg.seq) || 0;
-    if (!conn.user || !store.members.isActive(groupId, conn.user.id)) return;
+    if (!conn.user || seq <= 0 || !store.members.isActive(groupId, conn.user.id)) return;
+    const before = Number(store.members.get(groupId, conn.user.id)?.last_read_seq || 0);
     store.members.setLastRead(groupId, conn.user.id, seq);
+    // 只在真正推进时通知他人，避免重复 read 帧刷屏
+    if (seq > before) {
+      broadcast(
+        groupId,
+        { type: 'read-receipt', groupId, userId: conn.user.id, seq },
+        { except: conn },
+      );
+    }
   }
 
   function onSend(conn, msg) {

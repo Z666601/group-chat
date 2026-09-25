@@ -306,6 +306,32 @@ try {
   const overlap = page1.data.messages.some((m) => page2.data.messages.some((n) => n.id === m.id));
   check('向上翻页不重叠', !overlap && page2.data.messages.length > 0, `page1=${page1.data.messages.length}, page2=${page2.data.messages.length}`);
 
+  console.log('\n── 10b. 已读回执与未读分割线 ─────────────────');
+  const readSeq = page1.data.latestSeq;
+  wsB2.send({ type: 'read', groupId, seq: readSeq });
+  let receipt = null;
+  try {
+    receipt = await wsA.next(3000, (m) => m.type === 'read-receipt' && m.userId === userB.id);
+  } catch {
+    /* 未收到 */
+  }
+  check('已读上报会广播 read-receipt 给他人', !!receipt && receipt.seq === readSeq, receipt ? `seq=${receipt.seq}` : '未收到');
+  const detailAfterRead = await api(`/groups/${groupId}`, { token: tokenA });
+  const memberB = (detailAfterRead.data.members || []).find((m) => m.id === userB.id);
+  check('群详情成员的 lastReadSeq 已推进', Number(memberB?.lastReadSeq) >= readSeq, `lastReadSeq=${memberB?.lastReadSeq}`);
+  // 回退的 read 不应再广播
+  wsB2.send({ type: 'read', groupId, seq: 1 });
+  let echo = null;
+  try {
+    echo = await wsA.next(800, (m) => m.type === 'read-receipt' && m.userId === userB.id);
+  } catch {
+    /* 预期不收到 */
+  }
+  check('游标回退的 read 不重复广播', echo === null);
+  const listB = await api('/groups', { token: tokenB });
+  const rowB = (listB.data.groups || []).find((g) => g.id === groupId);
+  check('未读数与 last_read_seq 一致', Number(rowB?.unread) === Math.max(0, Number(rowB?.latestSeq) - readSeq), `unread=${rowB?.unread}`);
+
   console.log('\n── 11. 后台台账与可观测性 ────────────────────');
   const auditDenied = await api('/api/admin/audit?type=authz_denied', { token: undefined, headers: { 'x-admin-token': ADMIN_TOKEN } });
   check('越权拦截已入台账', auditDenied.status === 200 && auditDenied.data.records.length >= 3, `记录数=${auditDenied.data.records?.length}`);

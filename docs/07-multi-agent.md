@@ -167,3 +167,21 @@ node --no-warnings scripts/demo-run.mjs --wait=55000
 - Agent Token 存在数据库里的**散列**，明文只在发牌时返回一次，写入 `agents/.tokens.local.json`（已在 `.gitignore` 中忽略）；
 - 管理令牌改为从文件读取（`ADMIN_TOKEN_FILE`），不再出现在命令行与进程列表中；
 - Agent 的一切发言都走与人类相同的成员校验；越权同样被拒并写入审计台账（`type=authz_denied`）。
+
+---
+
+## 9. 排障要点
+
+**从别的 AI 会话里手动拉起桥接器时，Qoder 会静默失败。** 若启动 `agents/start-all.mjs` 的 shell 带着 `QODER_AGENT_SDK_ENTRYPOINT` / `QODER_AGENT_SDK_VERSION` / `QODERCLI_RUNTIME_PACKAGING`（例如从 Qoder Agent 自己的终端里启动），`qoderclicn.exe` 会以 `sdk_invalid_args` 退出（exit=4），群里只会出现「无法应答：Qoder CLI 调用失败」。清掉这几个变量再启动即可：
+
+```powershell
+Remove-Item Env:QODER_AGENT_SDK_ENTRYPOINT,Env:QODER_AGENT_SDK_VERSION,Env:QODERCLI_RUNTIME_PACKAGING -ErrorAction SilentlyContinue
+node --no-warnings agents/start-all.mjs
+```
+
+双击桌面「群聊」走的是 `desktop\start.ps1`，不受此影响。判据：`data\agents.log` 里 `[qoder] 大脑失败： ... exit=4` 即命中本条；若打的是 AutoClaw 且日志出现 `HTTP 402 ... Insufficient balance`，那是网关额度用尽，需要充值而不是改代码。
+
+> 另外：`agents/start-all.mjs` 订阅的群取自 `agents/.tokens.local.json` 的 `groupId`。先跑 `provision.mjs --group=A` 再跑 `demo-run.mjs`（默认群名是「多智能体讨论组（演示）」）会把令牌文件改指到另一个群，于是桥接器全程静默。顺序应为：provision 与 demo-run 用同一个 `--group`，或直接用桌面启动器。
+
+桥接器现在也会对收到的每条消息上报已读游标（`{"type":"read"}`），因此成员面板与标题栏的「已读 x/n」会包含 Agent。
+

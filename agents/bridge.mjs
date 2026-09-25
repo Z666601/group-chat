@@ -301,6 +301,7 @@ function connect() {
     if (msg.type === 'subscribed') {
       latestSeq = msg.latestSeq || 0;
       log('已订阅，latestSeq =', latestSeq);
+      send({ type: 'read', groupId, seq: latestSeq });
       await refreshModel();
       return;
     }
@@ -316,6 +317,7 @@ function connect() {
     if (msg.type === 'message') {
       const m = msg.message;
       if (m.seq > latestSeq) latestSeq = m.seq;
+      send({ type: 'read', groupId, seq: m.seq });
       history.push(m);
       if (history.length > 60) history.shift();
       if (m.senderId === myUserId) return; // 不回自己

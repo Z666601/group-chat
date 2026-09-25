@@ -194,6 +194,11 @@ form[aria-busy="true"] { opacity: .7; }
 .msg-status[data-status="sending"] { color: var(--warn); }
 .msg-retry { margin-left: 6px; }
 .day-sep { text-align: center; color: var(--ink-3); font-size: 12px; margin: 14px 0 6px; }
+.unread-sep {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--danger); font-size: 12px; margin: 12px 20px 6px;
+}
+.unread-sep::before, .unread-sep::after { content: ''; flex: 1; height: 1px; background: var(--danger); opacity: .45; }
 .empty-state { color: var(--ink-2); padding: 24px 20px; max-width: 60ch; }
 .loadmore { padding: 4px 20px 8px; }
 

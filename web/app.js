@@ -17,6 +17,8 @@ const state = {
   outbox: new Map(), // clientMsgId -> {groupId, text, type, status, messageId, seq, retry}
   oldestSeq: new Map(),
   hasMore: new Map(),
+  readBaseline: new Map(), // groupId -> 进入群时的已读游标（用于未读分割线，本次停留期间固定）
+  reportedRead: new Map(), // groupId -> 已向服务端上报到的最大 seq
   ws: null,
   wsState: 'connecting',
   modelCatalog: [],
@@ -333,9 +335,26 @@ async function loadGroupDetail(groupId) {
   const data = await api(`/groups/${groupId}`);
   state.group = data.group;
   state.members = data.members || [];
+  if (!state.readBaseline.has(groupId)) {
+    const me = state.members.find((m) => state.me && m.id === state.me.id);
+    state.readBaseline.set(groupId, me ? Number(me.lastReadSeq || 0) : 0);
+  }
   if (!state.modelCatalog.length) await ensureModelCatalog();
   renderHeader();
   renderMembers();
+}
+
+// 把当前群里已看到的最大 seq 上报给服务端（游标只前进不后退）
+function reportRead(groupId) {
+  if (!groupId || groupId !== state.currentGroupId || !state.ws) return;
+  const msgs = state.messages.get(groupId) || [];
+  const maxSeq = msgs.length ? msgs[msgs.length - 1].seq : 0;
+  const sent = state.reportedRead.get(groupId) || 0;
+  if (!maxSeq || maxSeq <= sent) return;
+  state.reportedRead.set(groupId, maxSeq);
+  state.ws.send(JSON.stringify({ type: 'read', groupId, seq: maxSeq }));
+  const me = state.members.find((m) => state.me && m.id === state.me.id);
+  if (me) me.lastReadSeq = Math.max(Number(me.lastReadSeq || 0), maxSeq);
 }
 
 // 模型下拉可选项（全局拉一次并缓存）
@@ -361,11 +380,21 @@ async function setAgentModel(agentKey, model, displayName) {
   }
 }
 
+// 「已读 x/n」：除自己外的成员里，读到最新一条的有几个人
+function readSummary(g) {
+  const msgs = state.messages.get(g.id) || [];
+  const latest = Math.max(Number(g.latestSeq || 0), msgs.length ? msgs[msgs.length - 1].seq : 0);
+  const peers = state.members.filter((m) => !state.me || m.id !== state.me.id);
+  if (!peers.length) return '已读 0/0';
+  const done = latest ? peers.filter((m) => Number(m.lastReadSeq || 0) >= latest).length : 0;
+  return `已读 ${done}/${peers.length}`;
+}
+
 function renderHeader() {
   const g = state.group;
   $('group-title').textContent = g ? (g.avatar ? g.avatar + ' ' : '') + g.name : '选择一个群';
   const meta = $('group-meta');
-  meta.textContent = g ? `${state.members.length} 位成员 · ${g.role === 'owner' ? '你是群主' : '你是成员'}` : '';
+  meta.textContent = g ? `${state.members.length} 位成员 · ${g.role === 'owner' ? '你是群主' : '你是成员'} · ${readSummary(g)}` : '';
   $('composer-input').disabled = !g;
   $('btn-send').disabled = !g;
   if (g && g.role === 'owner') $('composer-note').textContent = '你是群主，可在右侧成员面板管理成员或解散群聊。';
@@ -382,6 +411,8 @@ async function loadMessages(groupId) {
   state.hasMore.set(groupId, !!data.hasMore);
   renderMessages();
   scrollToBottom();
+  renderHeader();
+  reportRead(groupId);
 }
 
 async function loadOlder() {
@@ -444,7 +475,15 @@ function renderMessages({ keepScroll = false, prevHeight = 0 } = {}) {
 
   let lastDay = null;
   let prev = null;
-  for (const m of msgs) {
+  const anchor = state.readBaseline.get(groupId) || 0;
+  const firstUnread = anchor > 0 ? msgs.findIndex((m) => m.seq > anchor) : -1;
+  for (const [i, m] of msgs.entries()) {
+    if (i === firstUnread && i > 0) {
+      const sep = document.createElement('div');
+      sep.className = 'unread-sep';
+      sep.textContent = '以下是未读';
+      box.appendChild(sep);
+    }
     const dk = dayKey(m.createdAt);
     if (dk !== lastDay) {
       const sep = document.createElement('div');
@@ -1165,7 +1204,11 @@ function handleServerEvent(msg) {
     case 'message': {
       const gid = msg.groupId;
       const added = addMessageToState(gid, msg.message);
-      if (gid === state.currentGroupId && added) renderMessages();
+      if (gid === state.currentGroupId && added) {
+        renderMessages();
+        renderHeader();
+        reportRead(gid);
+      }
       if (gid !== state.currentGroupId) {
         const g = state.groups.find((x) => x.id === gid);
         if (g) {
@@ -1183,6 +1226,16 @@ function handleServerEvent(msg) {
       if (msg.truncated) toast('离线期间消息较多，仅补齐最近 500 条', 'info', 5000);
       if (msg.replayed > 0) toast(`已补齐离线期间的 ${msg.replayed} 条消息`, 'success');
       renderMembers();
+      break;
+    }
+    case 'read-receipt': {
+      if (msg.groupId !== state.currentGroupId) break;
+      const m = state.members.find((x) => x.id === msg.userId);
+      if (m) {
+        m.lastReadSeq = Math.max(Number(m.lastReadSeq || 0), Number(msg.seq) || 0);
+        renderHeader();
+        renderMembers();
+      }
       break;
     }
     case 'presence': {
