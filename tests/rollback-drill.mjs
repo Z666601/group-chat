@@ -8,8 +8,10 @@ import { DatabaseSync, backup } from 'node:sqlite';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, 'data', 'live');
-const LIVE = path.join(DATA_DIR, 'chat.db');
+// 与 server/index.mjs 的默认口径保持一致：以前默认写死 data/live，导致 npm run drill
+// 悄悄演练了一份 9/15 的历史残库（4KB），线上库从没被真正备份校验过。
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, 'data');
+const LIVE = process.env.DB_FILE ? path.resolve(process.env.DB_FILE) : path.join(DATA_DIR, 'chat.db');
 const BACKUP_DIR = path.join(DATA_DIR, 'backup');
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-');
 const BACKUP = path.join(BACKUP_DIR, `chat-${STAMP}.db`);
