@@ -128,7 +128,16 @@ server.stderr.on('data', (d) => {
   if (!s.includes('ExperimentalWarning')) process.stderr.write('[server] ' + s);
 });
 
+// 自检临时拉起的桥接器/启动器 PID：Windows 上子进程不随父退出，必须在收尾统一清掉
+const spawnedPids = [];
 const shutdown = () => {
+  for (const pid of spawnedPids) {
+    try {
+      process.kill(pid);
+    } catch {
+      /* ignore */
+    }
+  }
   try {
     server.kill('SIGTERM');
   } catch {
@@ -427,6 +436,179 @@ try {
       && probeOut.includes('QODERCLI_RUNTIME_PACKAGING'),
     probeOut.split('\n')[0].slice(0, 80),
   );
+
+  console.log('\n── 10d. 桥接器多开防重（start-all 幂等）──────');
+  // 双开「启动群聊」会起两套桥接器 → 同一条议题每人回两遍。
+  // 这里用 GC_* 缝隙把配置/令牌/PID 表指向临时文件，确保自检绝不碰真实状态与真实服务。
+  {
+    const dir = path.join(DATA_DIR, 'agents-probe');
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+    const cfgPath = path.join(dir, 'agents.config.json');
+    const tokPath = path.join(dir, 'tokens.local.json');
+    const pidPath = path.join(dir, 'bridge-pids.json');
+    const mkAgent = (key, name, avatar) => ({
+      key, name, avatar, trigger: 'mention', replyToAgents: false, supportsModel: false, brain: { type: 'local' },
+    });
+    fs.writeFileSync(
+      cfgPath,
+      JSON.stringify({ server: BASE, agents: [mkAgent('probea', '探针甲', '🅰️'), mkAgent('probeb', '探针乙', '🅱️')] }, null, 2),
+    );
+    const PENV = {
+      ...process.env,
+      SERVER: BASE,
+      ADMIN_TOKEN,
+      // 指向不存在的路径，避开真实 agents/.admin.token（provision 优先读文件）
+      ADMIN_TOKEN_FILE: path.join(dir, 'no-such-admin.token'),
+      GC_AGENTS_CONFIG: cfgPath,
+      GC_TOKENS_FILE: tokPath,
+      GC_BRIDGE_PIDS: pidPath,
+      LOG_LEVEL: 'silent',
+    };
+    const drain = (c) => {
+      let out = '';
+      c.stdout.on('data', (d) => (out += String(d)));
+      c.stderr.on('data', (d) => (out += String(d)));
+      return () => out;
+    };
+    const readPidTable = () => {
+      try {
+        const pids = JSON.parse(fs.readFileSync(pidPath, 'utf8')).pids || [];
+        for (const p of pids) if (!spawnedPids.includes(p.pid)) spawnedPids.push(p.pid);
+        return pids;
+      } catch {
+        return [];
+      }
+    };
+    // 超时也要有结论：幂等回归时第二轮 start-all 会一直不起新桥也不退出，不能把自检挂死
+    const runUntilExit = (script, argv = [], timeoutMs = 20000) =>
+      new Promise((resolve) => {
+        const c = spawn(process.execPath, ['--no-warnings', script, ...argv], {
+          cwd: ROOT, env: PENV, stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        spawnedPids.push(c.pid);
+        const getOut = drain(c);
+        const timer = setTimeout(() => {
+          try { c.kill(); } catch {}
+          resolve({ code: null, out: getOut(), timedOut: true });
+        }, timeoutMs);
+        c.on('close', (code) => {
+          clearTimeout(timer);
+          resolve({ code, out: getOut(), timedOut: false });
+        });
+      });
+
+    const realTok = path.join(ROOT, 'agents', '.tokens.local.json');
+    const realPids = path.join(ROOT, 'data', 'bridge-pids.json');
+    const fingerprint = (f) => {
+      try {
+        const s = fs.statSync(f);
+        return `${s.size}:${Math.round(s.mtimeMs)}`;
+      } catch {
+        return 'missing';
+      }
+    };
+    const fpTokBefore = fingerprint(realTok);
+    const fpPidBefore = fingerprint(realPids);
+
+    const prov = await runUntilExit('agents/provision.mjs', ['--group=自检探针群', '--owner=probe_owner', '--password=probe_pass_123']);
+    check('探针群发放令牌成功（provision 走 GC_TOKENS_FILE）', prov.code === 0, `code=${prov.code} ${prov.out.slice(-90).replace(/\s+/g, ' ')}`);
+    check('真实令牌文件未被自检改写', fingerprint(realTok) === fpTokBefore, `${fpTokBefore} → ${fingerprint(realTok)}`);
+
+    const sa1 = spawn(process.execPath, ['--no-warnings', 'agents/start-all.mjs'], {
+      cwd: ROOT, env: PENV, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    });
+    spawnedPids.push(sa1.pid);
+    drain(sa1);
+
+    const tokens = JSON.parse(fs.readFileSync(tokPath, 'utf8'));
+    const onlineKeys = async () => {
+      const r = await api(`/groups/${tokens.groupId}`, { token: tokens.ownerToken });
+      return new Set((r.data.members || []).filter((m) => m.online && m.agentKey).map((m) => m.agentKey));
+    };
+    let on = new Set();
+    for (let i = 0; i < 40; i++) {
+      on = await onlineKeys();
+      if (on.has('probea') && on.has('probeb')) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    check('首轮 start-all 起满两个探针桥接器', on.has('probea') && on.has('probeb'), [...on].join(','));
+    const pidBefore = readPidTable();
+
+    const sa2 = await runUntilExit('agents/start-all.mjs', [], 8000);
+    check('第二轮 start-all 不重复起桥、自行退出', !sa2.timedOut && sa2.code === 0, `code=${sa2.code} timedOut=${sa2.timedOut}`);
+    check('第二轮明确跳过存活的两个 key', /已在运行，跳过：probea/.test(sa2.out) && /probeb\(pid/.test(sa2.out), (sa2.out.match(/已在运行.*/) || [''])[0].slice(0, 70));
+    const pidAfter = readPidTable();
+    check(
+      'PID 表未翻倍（仍是 2 条且 pid 与首轮相同）',
+      pidAfter.length === 2 && pidAfter.every((p) => pidBefore.some((q) => q.key === p.key && q.pid === p.pid)),
+      JSON.stringify(pidAfter.map((p) => `${p.key}:${p.pid === pidBefore.find((q) => q.key === p.key)?.pid ? 'same' : 'NEW'}`)),
+    );
+    check('真实 PID 表未被自检改写', fingerprint(realPids) === fpPidBefore, `${fpPidBefore} → ${fingerprint(realPids)}`);
+
+    const post = await api(`/groups/${tokens.groupId}/messages`, {
+      method: 'POST', token: tokens.ownerToken, body: { text: '请探针甲与探针乙就「上线风险」各说一句' },
+    });
+    check('向探针群发议题成功', post.status === 201 || post.status === 200, `status=${post.status}`);
+    const agentCounts = async () => {
+      const r = await api(`/groups/${tokens.groupId}/messages?limit=100`, { token: tokens.ownerToken });
+      const ms = (r.data.messages || []).filter((m) => m.senderKind === 'agent');
+      return { a: ms.filter((m) => m.senderName === '探针甲').length, b: ms.filter((m) => m.senderName === '探针乙').length };
+    };
+    let got = { a: 0, b: 0 };
+    for (let i = 0; i < 40; i++) {
+      got = await agentCounts();
+      if (got.a >= 1 && got.b >= 1) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    await new Promise((r) => setTimeout(r, 2500)); // 再等一会：多开的话重复回帖此刻早已落库
+    const counted = await agentCounts();
+    check(
+      '连起两次 start-all 后每个 Agent 只回一条',
+      counted.a === 1 && counted.b === 1,
+      `甲=${counted.a} 乙=${counted.b}`,
+    );
+
+    // 掉线自愈：杀掉一个桥接器，下一轮只该补它，不能被「pid 表里有活的」一刀切跳过
+    const beforeKill = readPidTable();
+    check('两轮后 PID 表仍如实记录两条活口', beforeKill.length === 2, JSON.stringify(beforeKill));
+    const victim = beforeKill.find((p) => p.key === 'probeb');
+    if (victim) {
+      try { process.kill(victim.pid); } catch {}
+    }
+    for (let i = 0; i < 20; i++) {
+      if (!(await onlineKeys()).has('probeb')) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    // 这一轮有活要干（补起 probeb），所以 start-all 会驻留守护子进程，不能等它退出
+    const sa3 = spawn(process.execPath, ['--no-warnings', 'agents/start-all.mjs'], {
+      cwd: ROOT, env: PENV, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    });
+    spawnedPids.push(sa3.pid);
+    const sa3Out = drain(sa3);
+    let healed = false;
+    for (let i = 0; i < 40; i++) {
+      if ((await onlineKeys()).has('probeb')) { healed = true; break; }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    const pid3 = readPidTable();
+    const revived = pid3.find((p) => p.key === 'probeb');
+    const kept = pid3.find((p) => p.key === 'probea');
+    check(
+      '桥接器掉线后下一轮只补起死掉的那个',
+      /已在运行，跳过：probea/.test(sa3Out())
+        && pid3.length === 2
+        && !!revived && !!victim && revived.pid !== victim.pid
+        && !!kept && kept.pid === beforeKill.find((p) => p.key === 'probea')?.pid,
+      (sa3Out().match(/已在运行.*/) || [''])[0].slice(0, 70),
+    );
+    check('补起的桥接器重新上线', healed);
+
+    for (const p of readPidTable()) {
+      try { process.kill(p.pid); } catch {}
+    }
+    try { sa1.kill(); } catch {}
+  }
 
   console.log('\n── 11. 后台台账与可观测性 ────────────────────');
   const auditDenied = await api('/api/admin/audit?type=authz_denied', { token: undefined, headers: { 'x-admin-token': ADMIN_TOKEN } });

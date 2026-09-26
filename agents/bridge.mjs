@@ -15,8 +15,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const CONFIG_PATH = path.join(__dirname, 'agents.config.json');
-const TOKENS_PATH = path.join(__dirname, '.tokens.local.json');
+const CONFIG_PATH = process.env.GC_AGENTS_CONFIG || path.join(__dirname, 'agents.config.json');
+const TOKENS_PATH = process.env.GC_TOKENS_FILE || path.join(__dirname, '.tokens.local.json');
 
 // 从 AI 会话终端里手动拉起桥接器时会继承 Qoder Agent SDK 的入口标记，
 // 子进程 qoderclicn 见到它就报 sdk_invalid_args 直接退出（exit=4），群里只剩「无法应答」。

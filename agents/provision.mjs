@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'agents.config.json'), 'utf8'));
+const CONFIG_PATH = process.env.GC_AGENTS_CONFIG || path.join(__dirname, 'agents.config.json');
+const TOKENS_PATH = process.env.GC_TOKENS_FILE || path.join(__dirname, '.tokens.local.json');
+const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 const SERVER = process.env.SERVER || config.server || 'http://127.0.0.1:8787';
 
 const args = process.argv.slice(2);
@@ -95,10 +97,10 @@ async function main() {
   }
 
   fs.writeFileSync(
-    path.join(__dirname, '.tokens.local.json'),
+    TOKENS_PATH,
     JSON.stringify({ server: SERVER, groupId: group.id, groupName: group.name, ownerToken, agentNames, tokens }, null, 2),
   );
-  console.log('\n令牌已写入 agents/.tokens.local.json');
+  console.log('\n令牌已写入', TOKENS_PATH);
   console.log('群组：', group.name, `(${group.id})`);
   console.log('群聊地址：', SERVER, '（登录', OWNER, '/', OWNER_PASSWORD, '）');
 }
