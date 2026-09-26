@@ -450,10 +450,24 @@ try {
     const mkAgent = (key, name, avatar) => ({
       key, name, avatar, trigger: 'mention', replyToAgents: false, supportsModel: false, brain: { type: 'local' },
     });
-    fs.writeFileSync(
-      cfgPath,
-      JSON.stringify({ server: BASE, agents: [mkAgent('probea', '探针甲', '🅰️'), mkAgent('probeb', '探针乙', '🅱️')] }, null, 2),
-    );
+    // 探针丙：命令大脑「stdout 空 + exit≠0」的失败样本（node 自身，零成本、零外部依赖），
+    // 用来钉住 D② 那条契约——失败必须在群里说人话，不能静默、也不能把原始报错贴进群。
+    const PROBE_FAIL_SPEECH = '无法应答：探针大脑暂不可用（自检固定话术）';
+    const PROBE_KEYS = ['probea', 'probeb', 'probecmd'];
+    const allOnline = async () => {
+      const on = await onlineKeys();
+      return PROBE_KEYS.every((k) => on.has(k));
+    };
+    const agents = [
+      mkAgent('probea', '探针甲', '🅰️'),
+      mkAgent('probeb', '探针乙', '🅱️'),
+      {
+        key: 'probecmd', name: '探针丙', avatar: '🅲', trigger: 'mention', replyToAgents: false, supportsModel: false,
+        unavailable: PROBE_FAIL_SPEECH,
+        brain: { type: 'cmd', command: process.execPath, args: ['-e', 'process.exit(3)'], timeoutMs: 20000 },
+      },
+    ];
+    fs.writeFileSync(cfgPath, JSON.stringify({ server: BASE, agents }, null, 2));
     const PENV = {
       ...process.env,
       SERVER: BASE,
@@ -529,19 +543,23 @@ try {
     let on = new Set();
     for (let i = 0; i < 40; i++) {
       on = await onlineKeys();
-      if (on.has('probea') && on.has('probeb')) break;
+      if (await allOnline()) break;
       await new Promise((r) => setTimeout(r, 250));
     }
-    check('首轮 start-all 起满两个探针桥接器', on.has('probea') && on.has('probeb'), [...on].join(','));
+    check('首轮 start-all 起满三个探针桥接器', await allOnline(), [...on].join(','));
     const pidBefore = readPidTable();
 
     const sa2 = await runUntilExit('agents/start-all.mjs', [], 8000);
     check('第二轮 start-all 不重复起桥、自行退出', !sa2.timedOut && sa2.code === 0, `code=${sa2.code} timedOut=${sa2.timedOut}`);
-    check('第二轮明确跳过存活的两个 key', /已在运行，跳过：probea/.test(sa2.out) && /probeb\(pid/.test(sa2.out), (sa2.out.match(/已在运行.*/) || [''])[0].slice(0, 70));
+    check(
+      '第二轮明确跳过存活的三个 key',
+      /已在运行，跳过：probea/.test(sa2.out) && /probeb\(pid/.test(sa2.out) && /probecmd\(pid/.test(sa2.out),
+      (sa2.out.match(/已在运行.*/) || [''])[0].slice(0, 70),
+    );
     const pidAfter = readPidTable();
     check(
-      'PID 表未翻倍（仍是 2 条且 pid 与首轮相同）',
-      pidAfter.length === 2 && pidAfter.every((p) => pidBefore.some((q) => q.key === p.key && q.pid === p.pid)),
+      'PID 表未翻倍（仍是 3 条且 pid 与首轮相同）',
+      pidAfter.length === 3 && pidAfter.every((p) => pidBefore.some((q) => q.key === p.key && q.pid === p.pid)),
       JSON.stringify(pidAfter.map((p) => `${p.key}:${p.pid === pidBefore.find((q) => q.key === p.key)?.pid ? 'same' : 'NEW'}`)),
     );
     check('真实 PID 表未被自检改写', fingerprint(realPids) === fpPidBefore, `${fpPidBefore} → ${fingerprint(realPids)}`);
@@ -568,10 +586,37 @@ try {
       counted.a === 1 && counted.b === 1,
       `甲=${counted.a} 乙=${counted.b}`,
     );
+    // 未点名的 Agent 必须保持沉默（否则群里全是噪声）
+    const silentCmd = (await api(`/groups/${tokens.groupId}/messages?limit=100`, { token: tokens.ownerToken }))
+      .data.messages.filter((m) => m.senderName === '探针丙');
+    check('没被点名的命令大脑探针保持沉默', silentCmd.length === 0, `丙=${silentCmd.length}`);
+
+    // D② 契约：cmd 大脑 exit≠0 且 stdout 为空时，要在群里说人话（固定兜底话术），
+    // 既不静默、也不把「exit=3 / 大脑未返回内容」这类原始报错贴进群。
+    const postFail = await api(`/groups/${tokens.groupId}/messages`, {
+      method: 'POST', token: tokens.ownerToken, body: { text: '请探针丙回一句' },
+    });
+    let failMsgs = [];
+    for (let i = 0; i < 40 && postFail.status < 300; i++) {
+      const r = await api(`/groups/${tokens.groupId}/messages?limit=100`, { token: tokens.ownerToken });
+      failMsgs = (r.data.messages || []).filter((m) => m.senderName === '探针丙');
+      if (failMsgs.length) break;
+      await new Promise((res) => setTimeout(res, 250));
+    }
+    check(
+      '命令大脑失败时群里给出可读兜底说明（非静默）',
+      failMsgs.length === 1 && failMsgs[0].body === PROBE_FAIL_SPEECH,
+      `丙=${failMsgs.length} 原文=${JSON.stringify(String(failMsgs[0]?.body ?? '').slice(0, 40))}`,
+    );
+    check(
+      '原始报错未泄漏进群聊',
+      failMsgs.every((m) => !/exit=|未返回内容|ENOENT|Error:/.test(m.body || '')),
+      (failMsgs[0]?.body || '').slice(0, 20),
+    );
 
     // 掉线自愈：杀掉一个桥接器，下一轮只该补它，不能被「pid 表里有活的」一刀切跳过
     const beforeKill = readPidTable();
-    check('两轮后 PID 表仍如实记录两条活口', beforeKill.length === 2, JSON.stringify(beforeKill));
+    check('两轮后 PID 表仍如实记录三条活口', beforeKill.length === 3, JSON.stringify(beforeKill));
     const victim = beforeKill.find((p) => p.key === 'probeb');
     if (victim) {
       try { process.kill(victim.pid); } catch {}
@@ -597,7 +642,7 @@ try {
     check(
       '桥接器掉线后下一轮只补起死掉的那个',
       /已在运行，跳过：probea/.test(sa3Out())
-        && pid3.length === 2
+        && pid3.length === 3
         && !!revived && !!victim && revived.pid !== victim.pid
         && !!kept && kept.pid === beforeKill.find((p) => p.key === 'probea')?.pid,
       (sa3Out().match(/已在运行.*/) || [''])[0].slice(0, 70),
