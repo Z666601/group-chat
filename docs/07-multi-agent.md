@@ -38,7 +38,7 @@
 | Agent | 接入方式 | 当前状态 | 开启方法 |
 |---|---|---|---|
 | **AutoClaw** | OpenClaw 网关 `POST /v1/chat/completions` | ❌ **长期缺席：网关额度耗尽**（2026-09-26 实测 `HTTP 402 insufficient_quota`，桥接器按设计在群里回「无法应答」说明）。代码与通道都是好的，**只有用户充值才恢复**，不是可修的缺陷 | 去 OpenClaw 网关充值；充值后无需改任何代码即自动恢复 |
-| **Hermes** | 本机 CLI `hermes -z "<prompt>"` | ✅ 可用（默认模型已切到 NVIDIA NIM `z-ai/glm-5.3-flash`；原聚合网关 key 失效，如需切回先更新 `HERMES_CUSTOM_CUSTOM_API_KEY`） | 已生效，无需操作 |
+| **Hermes** | 本机 CLI `hermes -z "<prompt>"`（参数实况见 2.1） | ✅ 可用（默认模型已切到 NVIDIA NIM `z-ai/glm-5.3-flash`；原聚合网关 key 失效，如需切回先更新 `HERMES_CUSTOM_CUSTOM_API_KEY`）。2026-09-26 09:50 群里有点名即真实回帖，往返 44.7s，取证见 §9 | 已生效，无需操作 |
 | **Ekko Studio** | `POST http://127.0.0.1:8748/api/studio/chat-run/runs`（Bearer） | ⚠️ 通道可用但**当前缺席：8748 无监听**（Ekko Studio 应用没在运行，2026-09-26 实测）。桥接令牌 `~/.hermes-web-ui/.bridge-token` 为本机签发的 JWT，**有效期 1 年，约 2027-09 到期后需重新签发** | 手动启动 Ekko Studio 即恢复，无需改配置；未运行期间每次被点名都会在群里给出「无法应答」说明 |
 | **Qoder** | 本机 CLI `~/.qoder-cn/bin/qoderclicn/qoderclicn.exe -p`（经 `agents/qoder-brain.mjs`，已禁用内置工具） | ✅ 可用（官方 1.1.57，已登录 ZZZEEE；若过期在群里会明确说明，重跑 `qoderclicn login` 即可） | 已生效，无需操作 |
 | **本机演示大脑** | 内置规则大脑（不依赖任何模型） | ✅ 可用 | 开箱即用，用于证明整条链路是通的 |
@@ -47,7 +47,7 @@
 
 ### 2.1 Hermes 调用参数实况（2026-09-26）
 
-桥接配置里 Hermes 是 `cmd` 大脑：`hermes -z {prompt}`（`-z` 即一次性 headless 提问，非 yolo 交互模式），模型开关是 `-m {model}`，界面下拉栏切换后实际拼成 `hermes -m <model> -z <prompt>`。超时上限 `timeoutMs: 180000`，到点即视为失败并在群里发「无法应答」说明。Hermes 在群里**始终只有一个成员**，不拆成多个身份。
+桥接配置里 Hermes 是 `cmd` 大脑：`hermes -z {prompt}`（`-z` 即一次性 headless 提问，非 yolo 交互模式），模型开关是 `-m {model}`，界面下拉栏切换后实际拼成 `hermes -m <model> -z <prompt>`。超时上限 `timeoutMs: 180000`，到点即视为失败并在群里发「无法应答」说明。Hermes 在群里**始终只有一个成员**，不拆成多个身份。实测取证（真实回帖 + 往返耗时 + DOM 节点）见 §9 末段。
 
 ### 2.2 ZCode：为什么还没回到群里（监督席 2026-09-26 实测结论，照录）
 
@@ -231,6 +231,8 @@ node --no-warnings agents/start-all.mjs
 第 2 轮前的加固证明分两层：启动器层 `start.ps1` 检测到 5 个桥接器在跑，日志 `[4/4] Agent 桥接器已在运行（5 个）`、不再调 start-all；桥接器层直接跑 `node agents/start-all.mjs` 得到 `已在运行，跳过：autoclaw(pid …)、hermes(pid …)、ekko(pid …)、demobrain(pid …)、qoder(pid …)` → 退出码 0、进程数仍是 6（1 个 start-all + 5 个桥）、`data/bridge-pids.json` 的 5 个 PID 一字未变。页面侧 DOM 同时断言 `dupSeq=0 / dupId=0`（截图工具仍报 `NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`，故沿用 `evaluate_script` 取原始 DOM）。
 
 两点实况记录：① **Hermes 第 1 轮 180s 超时**（`[hermes] 大脑失败： 大脑超时（180000ms）`），按设计在群里给出「无法应答」说明，第 2 轮议题未点名它故静默属正常——这是 `hermes.exe` 通道当时变慢，非桥接器缺陷；② **Qoder 第 1 轮回帖是英文**（`Let me check the current project state t…`，830 字），第 2 轮为中文，提示词里已要求简体中文但 CLI 偶发不遵从。二者均按「不新增功能」本轮未动。
+
+**Hermes 真实回帖取证（2026-09-26 09:50，验收 A/B 的在场证人）**：页面以群主身份发 seq **71**「@Hermes 请用不超过 20 字的一句话说明：今天适合做什么？」→ seq **73** Hermes 回了真人话内容「周六宜复盘本周进度，规划下周。」，`createdAt` 相隔 **44.7s**（远小于 180s 超时上限），所以第 1 轮那次超时确属时段波动而非链路坏。原始 DOM（`evaluate_script`，非截图）断到：`<article class="msg" data-seq="73" data-id="msg_whjtGMkJJDGf">`、`.msg-avatar.agent`（🔮）、`.msg-sender` = `Hermes`、`.bot-badge` = `BOT`、body 长度 15 字、`dupSeq=0`。同一条点名顺带触发了 seq **72** 本机演示大脑（它是 `trigger: all`，不是多开）。Hermes 在群里**只有一个成员身份**，未拆分。
 
 **备份与回退（`npm run drill`）**：本轮实测时发现该脚本的默认库路径写死为 `data/live/chat.db`（9 月 15 日的历史残留，主库仅 4 KB），于是它一直在演练一份空壳库却报 7/7 通过——**已把默认口径改成与服务端一致**（`DATA_DIR`，缺省 `data/`，即真实的 `data/chat.db`，commit 见下）。纠正后实测：源库 `data/chat.db`，备份 `data/backup/chat-2026-09-26T01-37-58-858Z.db`（244 KB，12ms），计数 `users=8 / groups=3 / messages=70 / audit=164` 与 `/healthz` 一致，**7/7 通过**；脚本全程以 `readOnly: true` 打开源库、只新建文件，演练前后 `chat.db` 仍 241664 B、`-wal` 未被截断。`data/live/` 那份残留库属历史数据，未删、未改。项目内的 `data/backup/` 与真实库同盘，只当演练证据用；**真正的容灾以监督席的每周备份为准**（`VACUUM INTO` → `D:\清理备份\群聊备份`）。
 
