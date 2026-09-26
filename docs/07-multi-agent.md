@@ -16,11 +16,11 @@
         │                │                │                │
    ┌────▼────┐     ┌─────▼─────┐    ┌─────▼─────┐    ┌─────▼─────┐
    │ bridge  │     │  bridge   │    │  bridge   │    │  bridge   │
-   │ AutoClaw│     │  Hermes   │    │   Ekko    │    │   ZCode   │
+   │ AutoClaw│     │  Hermes   │    │   Ekko    │    │ZCode(待登录)│
    └────┬────┘     └─────┬─────┘    └─────┬─────┘    └─────┬─────┘
         │                │                │                │
    OpenClaw 网关     hermes CLI      8748 HTTP 工作台    zcode CLI
-   /v1/chat/...      -z "<prompt>"   /api/studio/...    --prompt
+   /v1/chat/...      -z "<prompt>"   /api/studio/...    --prompt（未生效，见 2.2）
 ```
 
 **三步链路**
@@ -44,6 +44,22 @@
 | **本机演示大脑** | 内置规则大脑（不依赖任何模型） | ✅ 可用 | 开箱即用，用于证明整条链路是通的 |
 
 > 诚实说明（2026-09-26 复核）：四条桥接通道与大脑在代码层面均已接通，实测有回帖的是 **Hermes 与 Qoder**；**AutoClaw 因网关额度耗尽（402）长期缺席**，**Ekko 因应用未运行（8748 无监听）当前缺席**——两者都会在群里给出明确的「无法应答」说明而不是静默，属于外部条件而非代码缺陷。ZCode 已按要求移出群聊（2026-09-22）。各 Agent 的令牌/登录态有效期不同：Ekko 桥接令牌 1 年、Qoder/Hermes 跟随各自登录态。补充：Hermes 的 `✅ 可用` 指通道接通且历史上有回帖，2026-09-26 一键演练中它有一次 **180s 超时**后改发「无法应答」说明（`hermes.exe` 偶发变慢），所以状态会随时段波动，不要当成 SLA。
+
+### 2.1 Hermes 调用参数实况（2026-09-26）
+
+桥接配置里 Hermes 是 `cmd` 大脑：`hermes -z {prompt}`（`-z` 即一次性 headless 提问，非 yolo 交互模式），模型开关是 `-m {model}`，界面下拉栏切换后实际拼成 `hermes -m <model> -z <prompt>`。超时上限 `timeoutMs: 180000`，到点即视为失败并在群里发「无法应答」说明。Hermes 在群里**始终只有一个成员**，不拆成多个身份。
+
+### 2.2 ZCode：为什么还没回到群里（监督席 2026-09-26 实测结论，照录）
+
+本节结论由监督席实测得出，开发席未重复探测，也未新建/改写 `~/.zcode` 下任何文件、未跑 `login`。
+
+- CLI 版本 `zcode.exe 0.15.2`。**旧文档里的 `--print` / `--model` 在该版本已删除**；`--settings`、`--max-turns` 是**假旗标**（接受参数但不生效，别指望它们）。
+- 可用入口：`--prompt <text>`（别名 `-p`）、`--mode plan|build|edit|yolo`（headless 下默认 `yolo`，须显式收口）、`--json`、`--cwd`、`--disallowed-tools`。
+- **硬阻塞（非代码缺陷）**：缺模型配置时报 `Error: Model config is missing. Create C:\Users\34288\.zcode\cli\config.json…`。GUI 读的是 `~/.zcode/v2/config.json`，真凭证在 `v2/credentials.json` 且为 `enc:` 加密，**不可复用给 CLI**。
+- **状态 = 待用户登录 / 待用户建 CLI 配置**，桥接层无需改动。红线：不替用户跑 `login`，不新建、不改写 `~/.zcode/cli/config.json`。
+- 若将来接回，`agents.config.json` 里该 Agent 的 args 必须写成 `--prompt {prompt}` **且带 `--mode plan`**（避免 headless 默认 yolo 放开工具），并把 `supportsModel` 置为 `false` —— CLI 已无 `--model`，界面下拉栏对它没有意义，留着会让用户以为能切模型。
+- ⚠️ `agents/agents.config.json.bak-zcode-fix` 是**旧世代快照**（里面连 zcode 条目都没有，只有 autoclaw/hermes/ekko 的旧兜底文案），**不要原样恢复**，否则会连带把已修掉的 `unavailable` 文案与已删的旗标一起带回生效配置。
+- 综上：**zcode 目前不在 `agents.config.json` 的生效 Agent 列表里**，这是刻意为之，不是漏配。
 
 ---
 
@@ -89,6 +105,8 @@ node --no-warnings scripts/demo-run.mjs --wait=55000
 > Hermes：无法应答：Hermes 模型通道连接失败（`hermes -z` 返回 API call failed: Connection error），需要检查 Hermes 的模型/API Key 配置。
 
 命令行类大脑还会识别「有输出但其实是失败」的情况（`API call failed`、`Connection error`、`Usage:` 帮助输出等），避免把原始报错当成回答贴进群里。
+
+**exit 码非 0 且 stdout 为空**这条路径 2026-09-26 已实测确认：`runCmd` 会以「大脑未返回内容（exit=N）」失败 → 桥接器 catch → 把 `unavailable` 那句话发进群里，**不贴原始报错**，也不是静默。`tests/smoke.mjs` 里有三条对应断言（探针丙 `process.exit(3)`：未被点名必须沉默、失败必须发可读兜底、报错原文不得进群）。一个诚实前提：**「不会静默」只对配了 `unavailable` 的 Agent 成立**——内置演示大脑 `unavailable: null`，它真失败时就是静默的（设计上它不依赖外部模型，几乎不会失败）。
 
 ---
 
