@@ -1320,9 +1320,24 @@ window.addEventListener('offline', () => {
 });
 
 // ── 启动 ─────────────────────────────────────────────
+// 本机免密进入：由服务端判定远端地址，前端只是试着要一个会话，失败就回落到密码登录表单
+async function localAutologin() {
+  try {
+    const data = await api('/local', { method: 'POST', body: {} });
+    state.token = data.token;
+    state.me = data.user;
+    localStorage.setItem(TOKEN_KEY, data.token);
+    await enterApp();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 (async function boot() {
   setAuthMode('login');
   if (!state.token) {
+    if (await localAutologin()) return;
     authView.hidden = false;
     return;
   }
@@ -1333,6 +1348,7 @@ window.addEventListener('offline', () => {
   } catch {
     state.token = '';
     localStorage.removeItem(TOKEN_KEY);
+    if (await localAutologin()) return;
     authView.hidden = false;
   }
 })();

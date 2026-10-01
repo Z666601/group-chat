@@ -114,7 +114,7 @@
           "agents/qoder-brain.mjs",
           "{prompt}"
         ],
-        "timeoutMs": 180000
+        "timeoutMs": 300000
       },
       "unavailable": "无法应答：Qoder CLI（qoderclicn）调用失败，请确认其登录状态（运行 qoderclicn login）。"
     }

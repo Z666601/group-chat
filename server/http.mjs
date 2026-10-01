@@ -177,6 +177,37 @@ export function createRouter({ log, metrics, hub, config, adminToken }) {
     { auth: false },
   );
 
+  // 本机免密进入：只认 socket 的真实远端地址；X-Forwarded-For 可被伪造，因此判本机不看 ctx.ip
+  add(
+    'POST',
+    '/api/auth/local',
+    ({ res, req, ip, userAgent }) => {
+      if (!config.localAutologin) {
+        return fail(res, 404, 'local_autologin_disabled', '本机免密进入未开启');
+      }
+      const peer = String(req?.socket?.remoteAddress || '');
+      if (!/^(127\.|\[::1\]|::1$|localhost$)/.test(peer)) {
+        store.audit.log({ type: 'login_local_denied', detail: { peer }, ip });
+        metrics.inc('auth.login_local_denied');
+        return fail(res, 403, 'not_local', '只允许本机回环地址免密进入');
+      }
+      const localUser = store.users.byUsername(config.localAutologinUser);
+      if (!localUser || localUser.status !== 'active') {
+        return fail(res, 404, 'local_user_missing', '本机免密账号不存在或已停用，请用密码登录');
+      }
+      const token = auth.issueSession(localUser.id, userAgent);
+      store.audit.log({ type: 'login_local', actorId: localUser.id, detail: { peer }, ip });
+      metrics.inc('auth.login_local');
+      return json(
+        res,
+        200,
+        { ok: true, user: auth.publicUser(localUser), token },
+        { 'set-cookie': auth.cookieHeader(token) },
+      );
+    },
+    { auth: false },
+  );
+
   add('POST', '/api/auth/logout', ({ res, token, user, ip }) => {
     if (token) store.sessions.delete(token);
     store.audit.log({ type: 'logout', actorId: user?.id || null, ip });

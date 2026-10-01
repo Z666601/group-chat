@@ -42,6 +42,12 @@ const config = {
   port: intEnv('PORT', 8787),
   dataDir: process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, 'data'),
   webDir: path.join(ROOT, 'web'),
+  // 本机免密进入：只在服务绑定回环地址时默认开启，可用 LOCAL_AUTOLOGIN=0 关掉。
+  // 判定本机用的是 socket 的真实远端地址，不看 X-Forwarded-For（那个头可以被伪造）。
+  localAutologin: process.env.LOCAL_AUTOLOGIN
+    ? process.env.LOCAL_AUTOLOGIN !== '0'
+    : /^(127\.|\[::1\]|::1|localhost$)/.test(process.env.HOST || '127.0.0.1'),
+  localAutologinUser: process.env.LOCAL_AUTOLOGIN_USER || 'app_owner',
   schemaFile: path.join(ROOT, 'db', 'schema.sql'),
   maxGroupMembers: intEnv('MAX_GROUP_MEMBERS', 200),
   limits: {

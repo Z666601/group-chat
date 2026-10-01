@@ -2,6 +2,13 @@
    群聊界面样式 · Information Architects 风格
    原则：内容优先 / 系统字体 / 零装饰 / 单一强调色 / 经典蓝链接
    ───────────────────────────────────────────────────────── */
+
+/* hidden 属性必须真的隐藏：本表里 .auth/.app 等用 display 定位，会盖掉浏览器默认的 [hidden]{display:none}，
+   导致登录页登录后仍浮在界面上、挡住按钮 */
+[hidden] {
+  display: none !important;
+}
+
 :root {
   --bg: #ffffff;
   --bg-sunk: #f7f7f6;

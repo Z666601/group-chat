@@ -63,7 +63,12 @@ if (!candidates.length) {
   process.exit(3);
 }
 
+// 只读评审席：权限模式必须是 auto，default/dont_ask 下 CLI 不执行工具，模型会把工具调用当正文吐进群聊
+const READONLY_TOOLS = ['--tools', 'Read', 'Glob', 'Grep'];
 const ARG_FORMS = [
+  (p) => ['-p', p, '--output-format', 'text', '--permission-mode', 'auto', ...READONLY_TOOLS],
+  (p) => ['-p', p, '--output-format', 'text', '--permission-mode', 'auto'],
+  (p) => ['-p', p, '--output-format', 'text'],
   // 禁用全部内置工具：群聊应答只需要文本，避免模型在会话目录里执行命令
   (p) => ['--tools', '', '-p', p],
   (p) => ['-p', p],
@@ -99,9 +104,12 @@ function run(cli, argv, timeoutMs) {
 
 const NOT_INSTALLED_RE = /CLI is not installed|not installed/i;
 
+// 首选形式要真的读文件、跨多轮工具调用，给足时间；降级形式只出文本，快得多
+const FORM_TIMEOUT_MS = [260000, 200000, 120000, 120000, 120000, 60000, 30000];
+
 for (const cli of candidates) {
-  for (const form of ARG_FORMS) {
-    const r = await run(cli, form(prompt), 150000);
+  for (let i = 0; i < ARG_FORMS.length; i++) {
+    const r = await run(cli, ARG_FORMS[i](prompt), FORM_TIMEOUT_MS[i] || 120000);
     const text = stripAnsi(r.out || '');
     if (r.ok && !looksLikeFailure(text)) {
       process.stdout.write(text.trim() + '\n');
