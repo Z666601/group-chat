@@ -120,6 +120,7 @@ const server = spawn(process.execPath, ['--no-warnings', 'server/index.mjs'], {
     DATA_DIR,
     ADMIN_TOKEN,
     LOG_LEVEL: 'silent',
+    LOCAL_AUTOLOGIN_USER: 'alice',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -693,6 +694,68 @@ try {
   summary.counts.finalTables = overview.data.counts;
   summary.counts.auditByType = overview.data.auditByType;
   check('总览接口返回表行数与审计分类', overview.status === 200 && overview.data.auditByType.length > 0, JSON.stringify(overview.data.counts));
+
+  console.log('\n── 14. 本机免密进入与前端可见性回归 ──────────');
+  const localOn = await api('/auth/local', { method: 'POST', body: {} });
+  check('本机回环可免密进入（200 且带 token）', localOn.status === 200 && localOn.data.token, `status=${localOn.status}`);
+  const meLocal = await api('/me', { token: localOn.data?.token });
+  check('免密会话取到的就是本机指定账号', meLocal.status === 200 && meLocal.data.user.username === 'alice', JSON.stringify(meLocal.data?.user || {}));
+  const spoofed = await api('/auth/local', { method: 'POST', body: {}, headers: { 'x-forwarded-for': '8.8.8.8' } });
+  check('伪造 X-Forwarded-For 改变不了本机判定（仍按 socket 远端）', spoofed.status === 200, `status=${spoofed.status}`);
+
+  const offDir = path.join(ROOT, 'data', 'smoke-off');
+  fs.rmSync(offDir, { recursive: true, force: true });
+  const offServer = spawn(process.execPath, ['--no-warnings', 'server/index.mjs'], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      PORT: String(PORT + 1),
+      HOST: '127.0.0.1',
+      DATA_DIR: offDir,
+      ADMIN_TOKEN,
+      LOG_LEVEL: 'silent',
+      LOCAL_AUTOLOGIN: '0',
+      LOCAL_AUTOLOGIN_USER: 'alice',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  spawnedPids.push(offServer.pid);
+  let offReady = false;
+  for (let i = 0; i < 60 && !offReady; i++) {
+    await new Promise((r) => setTimeout(r, 150));
+    try {
+      offReady = (await fetch(`http://127.0.0.1:${PORT + 1}/healthz`)).status === 200;
+    } catch {
+      /* 未就绪 */
+    }
+  }
+  const offRes = await fetch(`http://127.0.0.1:${PORT + 1}/api/auth/local`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  check('LOCAL_AUTOLOGIN=0 时免密入口关闭（404）', offReady && offRes.status === 404, `ready=${offReady} status=${offRes.status}`);
+
+  const cssText = fs.readFileSync(path.join(ROOT, 'web', 'styles.css'), 'utf8');
+  check('样式表让 hidden 属性真正生效（登录页不再浮在界面上挡按钮）', /\[hidden\][^}]*display:\s*none\s*!important/s.test(cssText));
+  const appJsText = fs.readFileSync(path.join(ROOT, 'web', 'app.js'), 'utf8');
+  check('前端启动先试本机免密、失败才回落到密码表单', appJsText.includes('async function localAutologin') && /if \(await localAutologin\(\)\) return;/.test(appJsText));
+  const qbrainText = fs.readFileSync(path.join(ROOT, 'agents', 'qoder-brain.mjs'), 'utf8');
+  const formsBlock = (qbrainText.split('const ARG_FORMS')[1] || '').split('];')[0];
+  const firstForm = (formsBlock.split('\n').find((l) => l.trim().startsWith('(p) =>')) || '').trim();
+  const readonlyLine = (qbrainText.split('\n').find((l) => l.includes('const READONLY_TOOLS')) || '').trim();
+  check(
+    'Qoder 大脑首选调用形式带 auto 权限（default/dont_ask 下 CLI 不执行工具，会把工具调用当正文吐进群）',
+    firstForm.includes("'--permission-mode', 'auto'") && firstForm.includes('...READONLY_TOOLS'),
+    firstForm,
+  );
+  check(
+    'Qoder 大脑的工具白名单只读（Read/Glob/Grep，不含写入与命令）',
+    /^const READONLY_TOOLS = \['--tools', 'Read', 'Glob', 'Grep'\];$/.test(readonlyLine),
+    readonlyLine,
+  );
+  const ovLocal = await api('/api/admin/overview', { headers: { 'x-admin-token': ADMIN_TOKEN } });
+  check('免密进入留有审计记录', JSON.stringify(ovLocal.data || {}).includes('login_local'), `status=${ovLocal.status}`);
 } catch (err) {
   failures++;
   console.error('\n[FATAL] ' + (err?.stack || err));
