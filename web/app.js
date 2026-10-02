@@ -30,6 +30,8 @@ const state = {
   pongDeadline: 0,
   manualClose: false,
 };
+// 调试钩子：控制台可直接查状态（window.__gcState）
+if (typeof window !== 'undefined') window.__gcState = state;
 
 // ── DOM ──────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -622,7 +624,10 @@ function buildMessage(m, prev) {
       body.appendChild(cap);
     }
   } else {
-    body.textContent = m.body;
+    // 注意：textContent 赋值会清空子节点，必须用独立文本节点，不能直接赋给 body（否则引用块被抹掉）
+    const text = document.createElement('div');
+    text.textContent = m.body;
+    body.appendChild(text);
   }
 
   main.append(head, body);

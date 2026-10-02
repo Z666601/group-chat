@@ -371,3 +371,28 @@ form[aria-busy="true"] { opacity: .7; }
 @media (prefers-reduced-motion: reduce) {
   .msg.highlight { transition: none; }
 }
+
+/* ── 视觉打磨 ─────────────────────────────────────── */
+/* 消息行悬浮底色：横向负边距抵消内边距，避免文字位移 */
+.msg { padding: 5px 8px; margin: 0 -8px; border-radius: 6px; }
+.msg:hover { background: var(--bg-sunk); }
+.msg.continues:hover { background: transparent; }
+
+/* 细滚动条 */
+.messages::-webkit-scrollbar,
+.member-list::-webkit-scrollbar,
+.group-list::-webkit-scrollbar,
+.search-results::-webkit-scrollbar { width: 8px; }
+.messages::-webkit-scrollbar-thumb,
+.member-list::-webkit-scrollbar-thumb,
+.group-list::-webkit-scrollbar-thumb,
+.search-results::-webkit-scrollbar-thumb {
+  background: var(--line-strong); border-radius: 4px;
+}
+.messages::-webkit-scrollbar-track,
+.member-list::-webkit-scrollbar-track,
+.group-list::-webkit-scrollbar-track { background: transparent; }
+
+/* 引用块左缘用强调色，视觉上和"回复"动作呼应 */
+.quote-block { border-left-color: var(--accent); }
+.quote-block:hover { border-left-color: var(--ink); }
