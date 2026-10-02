@@ -26,6 +26,10 @@ export function initDb({ file, schemaFile }) {
   if (!acols.includes('supports_model')) {
     db.exec('ALTER TABLE agent_bindings ADD COLUMN supports_model INTEGER NOT NULL DEFAULT 1');
   }
+  const mcols = db.prepare('PRAGMA table_info(messages)').all().map((c) => c.name);
+  if (!mcols.includes('reply_to')) {
+    db.exec('ALTER TABLE messages ADD COLUMN reply_to TEXT REFERENCES messages(id)');
+  }
   const row = get('SELECT MAX(version) AS v FROM schema_migrations');
   if (!row || row.v === null || row.v === undefined) {
     run('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)', [
@@ -333,13 +337,13 @@ export const messages = {
     const r = get('SELECT COALESCE(MAX(seq), 0) AS m FROM messages WHERE group_id = ?', [groupId]);
     return Number(r.m) + 1;
   },
-  insert({ groupId, senderId, type = 'text', body = '', attachmentId = null, clientMsgId = null, seq }) {
+  insert({ groupId, senderId, type = 'text', body = '', attachmentId = null, clientMsgId = null, replyTo = null, seq }) {
     const id = newId('msg');
     const t = nowIso();
     run(
-      `INSERT INTO messages (id, group_id, seq, sender_id, type, body, attachment_id, client_msg_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, groupId, seq, senderId, type, body, attachmentId, clientMsgId, t],
+      `INSERT INTO messages (id, group_id, seq, sender_id, type, body, attachment_id, reply_to, client_msg_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, groupId, seq, senderId, type, body, attachmentId, replyTo, clientMsgId, t],
     );
     return this.byId(id);
   },
@@ -382,6 +386,20 @@ export const messages = {
         );
     return rows.reverse();
   },
+  // 定位模式：取某条消息附近的窗口（搜索结果跳转用）
+  pageAround(groupId, seq, limit = 30) {
+    const lim = Math.max(5, Math.min(100, Number(limit) || 30));
+    const half = Math.floor(lim / 2);
+    const s = Number(seq) || 0;
+    return all(
+      `SELECT m.*, u.display_name AS sender_name, u.username AS sender_username,
+              u.avatar AS sender_avatar, u.kind AS sender_kind
+         FROM messages m JOIN users u ON u.id = m.sender_id
+        WHERE m.group_id = ? AND m.deleted_at IS NULL AND m.seq >= ? AND m.seq <= ?
+        ORDER BY m.seq ASC LIMIT ?`,
+      [groupId, Math.max(1, s - half), s + half, lim],
+    );
+  },
   since(groupId, sinceSeq, limit = 500) {
     return all(
       `SELECT m.*, u.display_name AS sender_name, u.username AS sender_username,
@@ -408,7 +426,7 @@ export const messages = {
   countAll() {
     return get('SELECT COUNT(*) AS c FROM messages WHERE deleted_at IS NULL')?.c ?? 0;
   },
-  search({ groupId = null, from = null, to = null, limit = 100 } = {}) {
+  search({ groupId = null, from = null, to = null, q = null, limit = 100 } = {}) {
     const where = ['m.deleted_at IS NULL'];
     const params = [];
     if (groupId) {
@@ -423,10 +441,16 @@ export const messages = {
       where.push('m.created_at <= ?');
       params.push(to);
     }
+    if (q) {
+      const kw = String(q).slice(0, 100);
+      where.push(`m.type = 'text' AND m.body LIKE ? ESCAPE '\\'`);
+      params.push('%' + kw.replace(/[\\%_]/g, (ch) => '\\' + ch) + '%');
+    }
     params.push(Math.max(1, Math.min(1000, Number(limit) || 100)));
     return all(
       `SELECT m.id, m.group_id, m.seq, m.sender_id, m.type, m.body, m.created_at,
-              u.username AS sender_username, u.display_name AS sender_name
+              u.username AS sender_username, u.display_name AS sender_name,
+              u.avatar AS sender_avatar, u.kind AS sender_kind
          FROM messages m JOIN users u ON u.id = m.sender_id
         WHERE ${where.join(' AND ')}
         ORDER BY m.created_at DESC LIMIT ?`,

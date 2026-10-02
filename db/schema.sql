@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS messages (
   type          TEXT NOT NULL DEFAULT 'text',      -- text | image | system
   body          TEXT NOT NULL DEFAULT '',
   attachment_id TEXT REFERENCES attachments(id),
+  reply_to      TEXT REFERENCES messages(id),      -- 引用回复的目标消息
   client_msg_id TEXT,                              -- 客户端幂等键
   created_at    TEXT NOT NULL,
   deleted_at    TEXT

@@ -17,7 +17,7 @@ function resolveAgent(req) {
 const IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
 function msgView(m) {
-  return {
+  const view = {
     id: m.id,
     groupId: m.group_id,
     seq: Number(m.seq),
@@ -29,8 +29,23 @@ function msgView(m) {
     type: m.type,
     body: m.body,
     attachmentId: m.attachment_id || null,
+    replyTo: m.reply_to || null,
     createdAt: m.created_at,
   };
+  if (m.reply_to) {
+    const t = store.messages.byId(m.reply_to);
+    view.replyPreview = !t
+      ? { id: m.reply_to, missing: true }
+      : {
+          id: t.id,
+          seq: Number(t.seq),
+          senderName: t.sender_name || t.sender_username || '未知',
+          senderKind: t.sender_kind || 'human',
+          deleted: !!t.deleted_at,
+          body: t.deleted_at ? '' : t.type === 'image' ? '[图片]' : String(t.body || '').slice(0, 140),
+        };
+  }
+  return view;
 }
 
 function groupView(g, extra = {}) {
@@ -273,6 +288,7 @@ export function createRouter({ log, metrics, hub, config, adminToken }) {
       }),
       members: store.members.list(g.id).map((m) => memberView(m, online, models, caps)),
       modelCatalog: models,
+      agentStatus: hub.agentStatusView(),
     });
   });
 
@@ -466,8 +482,11 @@ export function createRouter({ log, metrics, hub, config, adminToken }) {
       return fail(res, 403, 'not_a_member', '你不是该群成员，无法读取该群消息');
     }
     const beforeSeq = url.searchParams.get('beforeSeq');
+    const aroundSeq = url.searchParams.get('aroundSeq');
     const limit = Number(url.searchParams.get('limit') || 30);
-    const rows = store.messages.page(g.id, { beforeSeq, limit });
+    const rows = aroundSeq
+      ? store.messages.pageAround(g.id, aroundSeq, limit)
+      : store.messages.page(g.id, { beforeSeq, limit });
     const oldest = rows.length ? Number(rows[0].seq) : null;
     const hasMore = oldest !== null ? store.messages.page(g.id, { beforeSeq: oldest, limit: 1 }).length > 0 : false;
     return json(res, 200, {
@@ -511,14 +530,44 @@ export function createRouter({ log, metrics, hub, config, adminToken }) {
       metrics.inc('abuse.text_too_long');
       return fail(res, 400, 'text_too_long', `消息长度不能超过 ${config.limits.maxTextLength} 字`);
     }
+    let replyTo = body.replyTo ? String(body.replyTo).slice(0, 64) : null;
+    if (replyTo) {
+      const target = store.messages.byId(replyTo);
+      if (!target || target.group_id !== g.id || target.deleted_at) {
+        return fail(res, 400, 'reply_target_not_found', '被引用的消息不存在或已删除');
+      }
+    }
     const created = store.tx(() => {
       const seq = store.messages.nextSeq(g.id);
-      return store.messages.insert({ groupId: g.id, senderId: user.id, type: 'text', body: text, clientMsgId, seq });
+      return store.messages.insert({ groupId: g.id, senderId: user.id, type: 'text', body: text, clientMsgId, replyTo, seq });
     });
     store.groups.update(g.id, {});
     hub.broadcast(g.id, { type: 'message', groupId: g.id, message: msgView(created) });
     metrics.inc('message.sent_rest');
     return json(res, 201, { ok: true, message: msgView(created) });
+  });
+
+  // ── 历史搜索（群成员可用，仅本群文本消息）──────────
+  add('GET', '/api/groups/:id/search', ({ res, user, params, url }) => {
+    const g = store.groups.byId(params.id);
+    if (!g) return fail(res, 404, 'group_not_found', '群组不存在');
+    if (g.status !== 'active') return fail(res, 410, 'group_dissolved', '该群已解散，历史消息不可访问');
+    if (!store.members.isActive(g.id, user.id)) {
+      store.audit.log({
+        type: 'authz_denied',
+        actorId: user.id,
+        groupId: g.id,
+        detail: { op: 'search_messages' },
+      });
+      metrics.inc('authz.denied.search_messages');
+      return fail(res, 403, 'not_a_member', '你不是该群成员');
+    }
+    const q = String(url.searchParams.get('q') || '').trim();
+    if (!q) return fail(res, 400, 'empty_query', '搜索关键词不能为空');
+    const limit = Math.min(50, Number(url.searchParams.get('limit')) || 30);
+    const rows = store.messages.search({ groupId: g.id, q, limit });
+    metrics.inc('message.search');
+    return json(res, 200, { ok: true, query: q, total: rows.length, messages: rows.map(msgView) });
   });
 
   // ── 图片上传与访问 ────────────────────────────────

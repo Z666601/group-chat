@@ -111,6 +111,7 @@ export function createHub({ log, metrics, limits = {} }) {
     if (type === 'send-image') return onSendImage(conn, msg);
     if (type === 'read') return onRead(conn, msg);
     if (type === 'typing') return onTyping(conn, msg);
+    if (type === 'agent-status') return onAgentStatus(conn, msg);
     deny(conn, 'unknown_type', `未知的消息类型：${type}`);
   }
 
@@ -140,7 +141,7 @@ export function createHub({ log, metrics, limits = {} }) {
       online: onlineUserIds(groupId),
       truncated: missed.length >= L.replayLimit,
     });
-    broadcast(groupId, { type: 'presence', groupId, online: onlineUserIds(groupId) });
+    broadcast(groupId, { type: 'presence', groupId, online: onlineUserIds(groupId), agentStatus: agentStatusView() });
     metrics.inc('ws.subscribe');
   }
 
@@ -148,7 +149,7 @@ export function createHub({ log, metrics, limits = {} }) {
     const groupId = String(msg.groupId || '');
     conn.subs.delete(groupId);
     rooms.get(groupId)?.delete(conn);
-    broadcast(groupId, { type: 'presence', groupId, online: onlineUserIds(groupId) });
+    broadcast(groupId, { type: 'presence', groupId, online: onlineUserIds(groupId), agentStatus: agentStatusView() });
   }
 
   function onTyping(conn, msg) {
@@ -166,6 +167,30 @@ export function createHub({ log, metrics, limits = {} }) {
       },
       { except: conn },
     );
+  }
+
+  // ── 智能体状态牌：桥接器上报"在岗/缺席原因"，成员面板展示 ──
+  const agentStatus = new Map(); // userId -> { status: 'ok'|'unavailable', reason, at }
+  function onAgentStatus(conn, msg) {
+    if (!conn.user || conn.user.kind !== 'agent') {
+      return deny(conn, 'forbidden', '仅智能体可上报运行状态');
+    }
+    const status = msg.status === 'unavailable' ? 'unavailable' : 'ok';
+    const reason = typeof msg.reason === 'string' ? msg.reason.slice(0, 120) : '';
+    agentStatus.set(conn.user.id, { status, reason, at: nowIso() });
+    for (const groupId of conn.subs) {
+      broadcast(groupId, {
+        type: 'presence',
+        groupId,
+        online: onlineUserIds(groupId),
+        agentStatus: agentStatusView(),
+      });
+    }
+    metrics.inc('agent.status_report');
+  }
+
+  function agentStatusView() {
+    return Object.fromEntries(agentStatus);
   }
 
   function onRead(conn, msg) {
@@ -188,7 +213,8 @@ export function createHub({ log, metrics, limits = {} }) {
     const groupId = String(msg.groupId || '');
     const clientMsgId = msg.clientMsgId ? String(msg.clientMsgId).slice(0, 64) : null;
     const text = typeof msg.text === 'string' ? msg.text : '';
-    persistAndFanout(conn, { groupId, clientMsgId, type: 'text', body: text, kind: 'text' });
+    const replyTo = msg.replyTo ? String(msg.replyTo).slice(0, 64) : null;
+    persistAndFanout(conn, { groupId, clientMsgId, type: 'text', body: text, replyTo, kind: 'text' });
   }
 
   function onSendImage(conn, msg) {
@@ -196,6 +222,7 @@ export function createHub({ log, metrics, limits = {} }) {
     const clientMsgId = msg.clientMsgId ? String(msg.clientMsgId).slice(0, 64) : null;
     const attachmentId = String(msg.attachmentId || '');
     const caption = typeof msg.caption === 'string' ? msg.caption : '';
+    const replyTo = msg.replyTo ? String(msg.replyTo).slice(0, 64) : null;
     const att = store.attachments.byId(attachmentId);
     if (!att) {
       deny(conn, 'attachment_not_found', '图片不存在或已失效', { clientMsgId });
@@ -207,11 +234,12 @@ export function createHub({ log, metrics, limits = {} }) {
       type: 'image',
       body: caption,
       attachmentId,
+      replyTo,
       kind: 'image',
     });
   }
 
-  function persistAndFanout(conn, { groupId, clientMsgId, type, body, attachmentId = null, kind }) {
+  function persistAndFanout(conn, { groupId, clientMsgId, type, body, attachmentId = null, replyTo = null, kind }) {
     const t0 = Date.now();
     const check = requireMembership(conn, groupId);
     if (!check.ok) {
@@ -273,6 +301,15 @@ export function createHub({ log, metrics, limits = {} }) {
       return;
     }
 
+    // 引用回复：目标必须存在、同群、未删除
+    if (replyTo) {
+      const target = store.messages.byId(replyTo);
+      if (!target || target.group_id !== groupId || target.deleted_at) {
+        deny(conn, 'reply_target_not_found', '被引用的消息不存在或已删除', { clientMsgId });
+        return;
+      }
+    }
+
     let created;
     try {
       created = store.tx(() => {
@@ -283,6 +320,7 @@ export function createHub({ log, metrics, limits = {} }) {
           type,
           body: body ?? '',
           attachmentId,
+          replyTo,
           clientMsgId,
           seq,
         });
@@ -334,6 +372,20 @@ export function createHub({ log, metrics, limits = {} }) {
     });
   }
 
+  function replyPreviewOf(id) {
+    if (!id) return null;
+    const t = store.messages.byId(id);
+    if (!t) return { id, missing: true };
+    return {
+      id,
+      seq: Number(t.seq),
+      senderName: t.sender_name || t.sender_username || '未知',
+      senderKind: t.sender_kind || 'human',
+      deleted: !!t.deleted_at,
+      body: t.deleted_at ? '' : t.type === 'image' ? '[图片]' : String(t.body || '').slice(0, 140),
+    };
+  }
+
   function view(m) {
     return {
       id: m.id,
@@ -347,6 +399,8 @@ export function createHub({ log, metrics, limits = {} }) {
       type: m.type,
       body: m.body,
       attachmentId: m.attachment_id || null,
+      replyTo: m.reply_to || null,
+      replyPreview: m.reply_to ? replyPreviewOf(m.reply_to) : null,
       createdAt: m.created_at,
     };
   }
@@ -355,7 +409,13 @@ export function createHub({ log, metrics, limits = {} }) {
     for (const groupId of conn.subs) {
       rooms.get(groupId)?.delete(conn);
       if (rooms.get(groupId)?.size === 0) rooms.delete(groupId);
-      else broadcast(groupId, { type: 'presence', groupId, online: onlineUserIds(groupId) });
+      else
+        broadcast(groupId, {
+          type: 'presence',
+          groupId,
+          online: onlineUserIds(groupId),
+          agentStatus: agentStatusView(),
+        });
     }
     metrics.inc('ws.close');
   }
@@ -374,5 +434,5 @@ export function createHub({ log, metrics, limits = {} }) {
     onlineUsers.delete(userId);
   }
 
-  return { handle, onClose, broadcast, room, onlineUserIds, stats, trackUser, untrackUser, view, limits: L };
+  return { handle, onClose, broadcast, room, onlineUserIds, stats, trackUser, untrackUser, view, agentStatusView, limits: L };
 }

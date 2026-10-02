@@ -19,6 +19,9 @@ const state = {
   hasMore: new Map(),
   readBaseline: new Map(), // groupId -> 进入群时的已读游标（用于未读分割线，本次停留期间固定）
   reportedRead: new Map(), // groupId -> 已向服务端上报到的最大 seq
+  agentStatus: new Map(), // groupId -> { userId: { status, reason, at } } 智能体状态牌
+  replyTo: null, // { id, name, snippet } 当前正在引用回复的消息
+  searchTimer: null,
   ws: null,
   wsState: 'connecting',
   modelCatalog: [],
@@ -317,6 +320,7 @@ async function selectGroup(groupId) {
     return;
   }
   state.currentGroupId = groupId;
+  cancelReply();
   renderGroups();
   // 清空消息区（旧内容与静态空态节点一并移除，空态由 renderMessages 重建）
   $('messages').innerHTML = '';
@@ -335,6 +339,7 @@ async function loadGroupDetail(groupId) {
   const data = await api(`/groups/${groupId}`);
   state.group = data.group;
   state.members = data.members || [];
+  state.agentStatus.set(groupId, data.agentStatus || {});
   if (!state.readBaseline.has(groupId)) {
     const me = state.members.find((m) => state.me && m.id === state.me.id);
     state.readBaseline.set(groupId, me ? Number(me.lastReadSeq || 0) : 0);
@@ -397,6 +402,14 @@ function renderHeader() {
   meta.textContent = g ? `${state.members.length} 位成员 · ${g.role === 'owner' ? '你是群主' : '你是成员'} · ${readSummary(g)}` : '';
   $('composer-input').disabled = !g;
   $('btn-send').disabled = !g;
+  const searchInput = $('search-input');
+  if (searchInput) {
+    searchInput.disabled = !g;
+    if (!g) {
+      searchInput.value = '';
+      $('search-results').hidden = true;
+    }
+  }
   if (g && g.role === 'owner') $('composer-note').textContent = '你是群主，可在右侧成员面板管理成员或解散群聊。';
   else if (g) $('composer-note').textContent = '';
   else $('composer-note').textContent = '';
@@ -542,6 +555,18 @@ function buildMessage(m, prev) {
   time.textContent = fmtTime(m.createdAt);
   time.title = new Date(m.createdAt).toLocaleString('zh-CN');
   head.appendChild(time);
+  if (!m.status) {
+    const acts = document.createElement('span');
+    acts.className = 'msg-actions';
+    const rep = document.createElement('button');
+    rep.className = 'btn-link';
+    rep.type = 'button';
+    rep.textContent = '回复';
+    rep.title = '引用这条消息回复';
+    rep.addEventListener('click', () => startReply(m));
+    acts.appendChild(rep);
+    head.appendChild(acts);
+  }
   if (m.status) {
     const st = document.createElement('span');
     st.className = 'msg-status';
@@ -560,6 +585,25 @@ function buildMessage(m, prev) {
 
   const body = document.createElement('div');
   body.className = 'msg-body';
+  if (m.replyTo) {
+    const q = document.createElement('div');
+    q.className = 'quote-block';
+    q.title = '点击跳到被引用的消息';
+    const rp = m.replyPreview || null;
+    const sender = document.createElement('span');
+    sender.className = 'quote-sender';
+    sender.textContent = rp && !rp.missing && !rp.deleted ? rp.senderName : '原消息';
+    const qb = document.createElement('span');
+    qb.className = 'quote-body';
+    qb.textContent = !rp || rp.missing
+      ? '（未加载，点击尝试定位）'
+      : rp.deleted
+        ? '原消息已删除'
+        : rp.body || '[图片]';
+    q.append(sender, qb);
+    q.addEventListener('click', () => jumpToMessage(m.replyTo, Number(rp?.seq) || 0));
+    body.appendChild(q);
+  }
   if (m.type === 'image' && m.attachmentId) {
     const img = document.createElement('img');
     img.src = `/api/attachments/${m.attachmentId}`;
@@ -599,6 +643,8 @@ function renderOptimistic(entry) {
     type: entry.type || 'text',
     body: entry.text,
     attachmentId: entry.attachmentId || null,
+    replyTo: entry.replyTo || null,
+    replyPreview: entry.replyPreview || null,
     createdAt: new Date().toISOString(),
     status: 'sending',
   };
@@ -661,6 +707,146 @@ $('messages').addEventListener('scroll', () => {
   if (box.scrollTop < 60 && state.hasMore.get(state.currentGroupId)) loadOlder();
 });
 
+// ── 引用回复 ─────────────────────────────────────────
+function startReply(m) {
+  if (!state.currentGroupId) return;
+  state.replyTo = {
+    id: m.id,
+    name: m.senderName || m.senderUsername || '未知',
+    snippet: m.type === 'image' ? '[图片]' : String(m.body || '').slice(0, 60),
+  };
+  renderReplyChip();
+  $('composer-input').focus();
+}
+
+function cancelReply() {
+  state.replyTo = null;
+  renderReplyChip();
+}
+
+function renderReplyChip() {
+  const chip = $('reply-chip');
+  if (!chip) return;
+  chip.innerHTML = '';
+  chip.hidden = !state.replyTo;
+  if (!state.replyTo) return;
+  const t = document.createElement('span');
+  t.className = 'reply-text';
+  const b = document.createElement('b');
+  b.textContent = '回复 ' + state.replyTo.name + '：';
+  t.appendChild(b);
+  t.appendChild(document.createTextNode(state.replyTo.snippet));
+  const x = document.createElement('button');
+  x.className = 'btn btn-ghost icon-btn';
+  x.type = 'button';
+  x.textContent = '×';
+  x.setAttribute('aria-label', '取消引用');
+  x.addEventListener('click', cancelReply);
+  chip.append(t, x);
+}
+
+// ── 历史搜索 ─────────────────────────────────────────
+const searchInput = $('search-input');
+const searchResults = $('search-results');
+
+searchInput.addEventListener('input', () => {
+  clearTimeout(state.searchTimer);
+  const gid = state.currentGroupId;
+  const q = searchInput.value.trim();
+  if (!gid || !q) {
+    searchResults.hidden = true;
+    searchResults.innerHTML = '';
+    return;
+  }
+  state.searchTimer = setTimeout(async () => {
+    try {
+      const data = await api(`/groups/${gid}/search?q=${encodeURIComponent(q)}&limit=20`);
+      renderSearchResults(gid, q, data.messages || []);
+    } catch {
+      searchResults.hidden = true;
+    }
+  }, 300);
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.search-box')) searchResults.hidden = true;
+});
+
+function renderSearchResults(gid, q, rows) {
+  searchResults.innerHTML = '';
+  if (gid !== state.currentGroupId) return;
+  if (!rows.length) {
+    const e = document.createElement('div');
+    e.className = 'search-empty';
+    e.textContent = `没有找到包含「${q}」的消息`;
+    searchResults.appendChild(e);
+  }
+  for (const r of rows) {
+    const item = document.createElement('button');
+    item.className = 'search-item';
+    item.type = 'button';
+    const top = document.createElement('div');
+    top.className = 'search-item-top';
+    const s = document.createElement('span');
+    s.className = 'search-item-sender';
+    s.textContent = (r.senderKind === 'agent' ? '🤖 ' : '') + (r.senderName || r.senderUsername || '未知');
+    const t = document.createElement('span');
+    t.textContent = new Date(r.createdAt).toLocaleString('zh-CN');
+    top.append(s, t);
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'search-item-body';
+    const idx = r.body.toLowerCase().indexOf(q.toLowerCase());
+    if (idx >= 0) {
+      bodyEl.append(
+        document.createTextNode(r.body.slice(0, idx)),
+        Object.assign(document.createElement('mark'), { textContent: r.body.slice(idx, idx + q.length) }),
+        document.createTextNode(r.body.slice(idx + q.length)),
+      );
+    } else {
+      bodyEl.textContent = r.body;
+    }
+    item.append(top, bodyEl);
+    item.addEventListener('click', () => {
+      searchResults.hidden = true;
+      searchInput.value = '';
+      jumpToSeq(gid, Number(r.seq), r.id);
+    });
+    searchResults.appendChild(item);
+  }
+  searchResults.hidden = false;
+}
+
+// 跳转到某条消息：不在已加载窗口内就先拉附近一屏
+async function jumpToSeq(gid, seq, id) {
+  if (gid !== state.currentGroupId) return;
+  if (!(state.seqIndex.get(gid) || new Set()).has(seq)) {
+    try {
+      const data = await api(`/groups/${gid}/messages?aroundSeq=${seq}&limit=30`);
+      const merged = [...(state.messages.get(gid) || []), ...(data.messages || [])];
+      merged.sort((a, b) => a.seq - b.seq);
+      const seen = new Set();
+      const dedup = merged.filter((m) => (seen.has(m.seq) ? false : (seen.add(m.seq), true)));
+      state.messages.set(gid, dedup);
+      state.seqIndex.set(gid, new Set(dedup.map((m) => m.seq)));
+      state.oldestSeq.set(gid, dedup.length ? dedup[0].seq : null);
+      state.hasMore.set(gid, true);
+      renderMessages();
+    } catch (err) {
+      toast(err.message, 'error');
+      return;
+    }
+  }
+  jumpToMessage(id);
+}
+
+function jumpToMessage(id) {
+  const row = $('messages').querySelector(`[data-id="${id}"]`);
+  if (!row) return;
+  row.scrollIntoView({ block: 'center' });
+  row.classList.add('highlight');
+  setTimeout(() => row.classList.remove('highlight'), 1600);
+}
+
 // ── 发送 ─────────────────────────────────────────────
 async function sendMessage(text) {
   const groupId = state.currentGroupId;
@@ -672,8 +858,20 @@ async function sendMessage(text) {
     return;
   }
   const clientMsgId = uid();
-  const entry = { clientMsgId, groupId, text: trimmed, type: 'text', status: 'sending' };
+  const replyInfo = state.replyTo;
+  const entry = {
+    clientMsgId,
+    groupId,
+    text: trimmed,
+    type: 'text',
+    status: 'sending',
+    replyTo: replyInfo?.id || null,
+    replyPreview: replyInfo
+      ? { id: replyInfo.id, senderName: replyInfo.name, body: replyInfo.snippet }
+      : null,
+  };
   state.outbox.set(clientMsgId, entry);
+  cancelReply();
   renderOptimistic(entry);
   dispatchOutbox(clientMsgId);
 }
@@ -692,6 +890,7 @@ function dispatchOutbox(clientMsgId) {
         text: entry.text,
         caption: entry.text,
         attachmentId: entry.attachmentId,
+        replyTo: entry.replyTo || null,
       }),
     );
     entry.timer = setTimeout(() => {
@@ -704,7 +903,7 @@ function dispatchOutbox(clientMsgId) {
     // 实时通道未就绪 → 走 REST 兜底（服务端按 clientMsgId 幂等）
     api(`/groups/${entry.groupId}/messages`, {
       method: 'POST',
-      body: { text: entry.text, clientMsgId },
+      body: { text: entry.text, clientMsgId, replyTo: entry.replyTo || null },
     })
       .then((data) => {
         onAck({ clientMsgId, messageId: data.message.id, seq: data.message.seq, createdAt: data.message.createdAt });
@@ -749,6 +948,8 @@ function onAck({ clientMsgId, messageId, seq, createdAt }) {
       type: entry.type || 'text',
       body: entry.text,
       attachmentId: entry.attachmentId || null,
+      replyTo: entry.replyTo || null,
+      replyPreview: entry.replyPreview || null,
       createdAt,
     });
     arr.sort((a, b) => a.seq - b.seq);
@@ -823,9 +1024,14 @@ $('file-input').addEventListener('change', async (e) => {
       text: '',
       type: 'image',
       attachmentId: data.attachment.id,
+      replyTo: state.replyTo?.id || null,
+      replyPreview: state.replyTo
+        ? { id: state.replyTo.id, senderName: state.replyTo.name, body: state.replyTo.snippet }
+        : null,
       status: 'sending',
     };
     state.outbox.set(clientMsgId, entry);
+    cancelReply();
     renderOptimistic(entry);
     dispatchOutbox(clientMsgId);
   } catch (err) {
@@ -968,8 +1174,17 @@ function renderMembers() {
     role.textContent = m.kind === 'agent' ? '智能体' : m.role === 'owner' ? '群主' : '成员';
     li.append(dot, nm, role);
 
-    // ── Agent 专属：大模型选择下拉栏 ──
+    // ── Agent 专属：运行状态牌 + 大模型选择下拉栏 ──
     if (m.kind === 'agent') {
+      const st = (state.agentStatus.get(g.id) || {})[m.id];
+      if (st && st.status === 'unavailable') {
+        const sb = document.createElement('span');
+        sb.className = 'member-status';
+        sb.dataset.status = 'unavailable';
+        sb.textContent = '⚠ 缺席' + (st.reason ? '：' + st.reason : '');
+        sb.title = st.reason || '大脑不可用，被点名时会给出无法应答说明';
+        li.appendChild(sb);
+      }
       if (m.supportsModel === false) {
         const na = document.createElement('span');
         na.className = 'member-model na';
@@ -1223,6 +1438,7 @@ function handleServerEvent(msg) {
     }
     case 'subscribed': {
       state.online = new Set(msg.online || []);
+      if (msg.agentStatus) state.agentStatus.set(msg.groupId || state.currentGroupId, msg.agentStatus);
       if (msg.truncated) toast('离线期间消息较多，仅补齐最近 500 条', 'info', 5000);
       if (msg.replayed > 0) toast(`已补齐离线期间的 ${msg.replayed} 条消息`, 'success');
       renderMembers();
@@ -1241,6 +1457,7 @@ function handleServerEvent(msg) {
     case 'presence': {
       if (msg.groupId === state.currentGroupId) {
         state.online = new Set(msg.online || []);
+        if (msg.agentStatus) state.agentStatus.set(msg.groupId, msg.agentStatus);
         renderMembers();
       }
       break;

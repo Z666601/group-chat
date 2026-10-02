@@ -282,6 +282,11 @@ function signalTyping() {
   send({ type: 'typing', groupId });
 }
 
+// 上报运行状态（成员面板状态牌用）：ok=在岗，unavailable=缺席并带原因
+function sendAgentStatus(status, reason = '') {
+  send({ type: 'agent-status', status, reason: String(reason).slice(0, 120) });
+}
+
 function connect() {
   ws = new WebSocket(wsUrl);
   let readyInfo = null;
@@ -309,6 +314,7 @@ function connect() {
       latestSeq = msg.latestSeq || 0;
       log('已订阅，latestSeq =', latestSeq);
       send({ type: 'read', groupId, seq: latestSeq });
+      sendAgentStatus('ok');
       await refreshModel();
       return;
     }
@@ -351,10 +357,12 @@ function connect() {
       try {
         const reply = await think({ history, prompt: buildPrompt(history, m) });
         postMessage(reply);
+        sendAgentStatus('ok');
         log('已发言', String(reply).slice(0, 40) + '…');
       } catch (err) {
         const reason = String(err?.message || err);
         log('大脑失败：', reason);
+        sendAgentStatus('unavailable', reason);
         const now = Date.now();
         if (agent.unavailable && now - guard.lastUnavailableAt > 60000) {
           guard.lastUnavailableAt = now;
