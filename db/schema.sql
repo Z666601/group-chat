@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS messages (
   attachment_id TEXT REFERENCES attachments(id),
   reply_to      TEXT REFERENCES messages(id),      -- 引用回复的目标消息
   client_msg_id TEXT,                              -- 客户端幂等键
+  topic         TEXT,                              -- 消息开头 #标签 解析出的话题，可空
   created_at    TEXT NOT NULL,
   deleted_at    TEXT
 );
@@ -103,6 +104,22 @@ CREATE TABLE IF NOT EXISTS attachments (
   created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_attach_uploader ON attachments(uploader_id);
+
+-- ── 智能体运行台账（每次大脑调用的留痕与用量）──────
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts            TEXT NOT NULL,
+  group_id      TEXT NOT NULL,
+  agent_key     TEXT NOT NULL,
+  trigger       TEXT NOT NULL DEFAULT '',   -- mention | routine | once
+  model         TEXT NOT NULL DEFAULT '',
+  ok            INTEGER NOT NULL DEFAULT 0,
+  error         TEXT,
+  duration_ms   INTEGER NOT NULL DEFAULT 0,
+  prompt_digest TEXT NOT NULL DEFAULT ''    -- 触发消息摘要，事后追查用
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_group ON agent_runs(group_id, ts);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs(agent_key, ts);
 
 -- ── 审计台账 ──────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS audit_log (

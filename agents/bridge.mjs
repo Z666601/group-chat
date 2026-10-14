@@ -83,6 +83,47 @@ function markReply() {
   guard.replies.push(Date.now());
 }
 
+// ── 运行台账上报（留痕 + 用量统计，失败不阻塞发言）──
+function reportRun({ trigger, ok, error = null, durationMs, promptDigest = '' }) {
+  fetch(`${SERVER}/api/agent/runs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-agent-token': token },
+    body: JSON.stringify({ trigger, ok, error, durationMs, model: currentModel, promptDigest }),
+  }).catch(() => {});
+}
+
+// ── 忙锁：大脑思考中不接新触发，防止同一问题被并发处理 ──
+let busy = false;
+
+// ── 例程心跳：按配置定时让 Agent 主动冒泡（默认关）──
+if (agent.routine?.intervalMinutes > 0) {
+  const routine = agent.routine;
+  // 下限 5 分钟：防误配成极小值刷屏（mention 路径另有冷却/配额闸门，例程只有这一个闸）
+  const intervalMs = Math.max(5, routine.intervalMinutes) * 60_000;
+  setInterval(async () => {
+    if (stopping || busy || !ws || ws.readyState !== WebSocket.OPEN) return;
+    busy = true;
+    const t0 = Date.now();
+    log('例程触发：', routine.prompt || '例行冒泡');
+    try {
+      const reply = await think({
+        history,
+        prompt: [
+          `你是「${agent.name}」，这是一次例行心跳，不是有人提问。`,
+          routine.prompt || '用一两句话向群里简要汇报你的状态或补充一个观点。',
+          '要求：用简体中文，不超过 60 字。',
+        ].join('\n'),
+      });
+      postMessage(reply);
+      reportRun({ trigger: 'routine', ok: true, durationMs: Date.now() - t0 });
+    } catch (err) {
+      reportRun({ trigger: 'routine', ok: false, error: String(err?.message || err), durationMs: Date.now() - t0 });
+    } finally {
+      busy = false;
+    }
+  }, intervalMs);
+}
+
 // ── 大脑实现 ─────────────────────────────────────────
 function stripAnsi(s) {
   return String(s).replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').replace(/\r/g, '');
@@ -350,24 +391,35 @@ function connect() {
       if (mode === 'mention' && !named && !isAgentMsg) return;
       if (mode === 'mention' && isAgentMsg && !named) return;
       if (!canReply()) return;
+      if (busy) {
+        log('上一轮思考未结束，跳过本条触发');
+        return;
+      }
 
       markReply();
       log('开始思考 ←', (m.senderName || '') + '：' + text.slice(0, 40));
       signalTyping();
+      busy = true;
+      const t0 = Date.now();
+      const promptDigest = `${m.senderName || ''}：${text.slice(0, 80)}`;
       try {
         const reply = await think({ history, prompt: buildPrompt(history, m) });
         postMessage(reply);
         sendAgentStatus('ok');
+        reportRun({ trigger: 'mention', ok: true, durationMs: Date.now() - t0, promptDigest });
         log('已发言', String(reply).slice(0, 40) + '…');
       } catch (err) {
         const reason = String(err?.message || err);
         log('大脑失败：', reason);
         sendAgentStatus('unavailable', reason);
+        reportRun({ trigger: 'mention', ok: false, error: reason, durationMs: Date.now() - t0, promptDigest });
         const now = Date.now();
         if (agent.unavailable && now - guard.lastUnavailableAt > 60000) {
           guard.lastUnavailableAt = now;
           postMessage(agent.unavailable);
         }
+      } finally {
+        busy = false;
       }
       return;
     }

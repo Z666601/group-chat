@@ -30,6 +30,9 @@ export function initDb({ file, schemaFile }) {
   if (!mcols.includes('reply_to')) {
     db.exec('ALTER TABLE messages ADD COLUMN reply_to TEXT REFERENCES messages(id)');
   }
+  if (!mcols.includes('topic')) {
+    db.exec("ALTER TABLE messages ADD COLUMN topic TEXT");
+  }
   const row = get('SELECT MAX(version) AS v FROM schema_migrations');
   if (!row || row.v === null || row.v === undefined) {
     run('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)', [
@@ -332,6 +335,12 @@ export const members = {
 };
 
 // ── 消息 ─────────────────────────────────────────────
+// 消息开头的 #标签 解析为话题（如「#部署 今天上线」→ topic=部署）
+export function parseTopic(body) {
+  const m = /^#([^\s#，。！？、]{1,32})/.exec(String(body || '').trim());
+  return m ? m[1] : null;
+}
+
 export const messages = {
   nextSeq(groupId) {
     const r = get('SELECT COALESCE(MAX(seq), 0) AS m FROM messages WHERE group_id = ?', [groupId]);
@@ -341,9 +350,9 @@ export const messages = {
     const id = newId('msg');
     const t = nowIso();
     run(
-      `INSERT INTO messages (id, group_id, seq, sender_id, type, body, attachment_id, reply_to, client_msg_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, groupId, seq, senderId, type, body, attachmentId, replyTo, clientMsgId, t],
+      `INSERT INTO messages (id, group_id, seq, sender_id, type, body, attachment_id, reply_to, client_msg_id, topic, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, groupId, seq, senderId, type, body, attachmentId, replyTo, clientMsgId, parseTopic(body), t],
     );
     return this.byId(id);
   },
@@ -426,6 +435,14 @@ export const messages = {
   countAll() {
     return get('SELECT COUNT(*) AS c FROM messages WHERE deleted_at IS NULL')?.c ?? 0;
   },
+  topics(groupId) {
+    return all(
+      `SELECT topic, COUNT(*) AS c FROM messages
+        WHERE group_id = ? AND deleted_at IS NULL AND topic IS NOT NULL
+        GROUP BY topic ORDER BY c DESC LIMIT 50`,
+      [groupId],
+    );
+  },
   search({ groupId = null, from = null, to = null, q = null, limit = 100 } = {}) {
     const where = ['m.deleted_at IS NULL'];
     const params = [];
@@ -471,6 +488,56 @@ export const attachments = {
   },
   byId(id) {
     return get('SELECT * FROM attachments WHERE id = ?', [id]);
+  },
+};
+
+// ── 智能体运行台账 ───────────────────────────────────
+export const agentRuns = {
+  log({ groupId, agentKey, trigger = '', model = '', ok, error = null, durationMs = 0, promptDigest = '' }) {
+    run(
+      `INSERT INTO agent_runs (ts, group_id, agent_key, trigger, model, ok, error, duration_ms, prompt_digest)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        nowIso(),
+        groupId,
+        agentKey,
+        trigger,
+        model,
+        ok ? 1 : 0,
+        error ? String(error).slice(0, 500) : null,
+        Math.max(0, Number(durationMs) || 0),
+        String(promptDigest).slice(0, 200),
+      ],
+    );
+  },
+  list({ groupId = null, agentKey = null, limit = 100 } = {}) {
+    const where = [];
+    const params = [];
+    if (groupId) {
+      where.push('group_id = ?');
+      params.push(groupId);
+    }
+    if (agentKey) {
+      where.push('agent_key = ?');
+      params.push(agentKey);
+    }
+    params.push(Math.max(1, Math.min(1000, Number(limit) || 100)));
+    return all(
+      `SELECT * FROM agent_runs ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+       ORDER BY id DESC LIMIT ?`,
+      params,
+    );
+  },
+  statsByAgent(groupId) {
+    return all(
+      `SELECT agent_key,
+              COUNT(*) AS runs,
+              COALESCE(SUM(ok), 0) AS ok_runs,
+              CAST(AVG(duration_ms) AS INTEGER) AS avg_ms,
+              MAX(ts) AS last_at
+         FROM agent_runs WHERE group_id = ? GROUP BY agent_key`,
+      [groupId],
+    );
   },
 };
 
@@ -541,6 +608,7 @@ export function tableCounts() {
     attachments: t('attachments'),
     audit_log: t('audit_log'),
     agent_bindings: t('agent_bindings'),
+    agent_runs: t('agent_runs'),
   };
 }
 

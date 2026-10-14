@@ -30,6 +30,7 @@ function msgView(m) {
     body: m.body,
     attachmentId: m.attachment_id || null,
     replyTo: m.reply_to || null,
+    topic: m.topic || null,
     createdAt: m.created_at,
   };
   if (m.reply_to) {
@@ -857,6 +858,57 @@ export function createRouter({ log, metrics, hub, config, adminToken }) {
     },
     { auth: false },
   );
+
+  // ── 智能体运行台账（留痕 + 用量统计）───────────────
+  add(
+    'POST',
+    '/api/agent/runs',
+    ({ res, req, body }) => {
+      const binding = resolveAgent(req);
+      if (!binding) return fail(res, 401, 'invalid_agent_token', 'Agent 令牌无效');
+      store.agentRuns.log({
+        groupId: binding.group_id,
+        agentKey: binding.agent_key,
+        trigger: String(body.trigger || 'mention').slice(0, 16),
+        model: String(body.model || '').slice(0, 64),
+        ok: !!body.ok,
+        error: body.error ? String(body.error) : null,
+        durationMs: Number(body.durationMs) || 0,
+        promptDigest: String(body.promptDigest || ''),
+      });
+      metrics.inc(body.ok ? 'agent.run_ok' : 'agent.run_failed');
+      return json(res, 201, { ok: true });
+    },
+    { auth: false },
+  );
+
+  add('GET', '/api/groups/:id/agent-runs', ({ res, user, params, url }) => {
+    const g = store.groups.byId(params.id);
+    if (!g) return fail(res, 404, 'group_not_found', '群组不存在');
+    if (!store.members.isActive(g.id, user.id)) {
+      return fail(res, 403, 'not_a_member', '你不是该群成员');
+    }
+    const agentKey = url.searchParams.get('agentKey');
+    return json(res, 200, {
+      ok: true,
+      stats: store.agentRuns.statsByAgent(g.id),
+      recent: store.agentRuns.list({
+        groupId: g.id,
+        agentKey,
+        limit: Math.min(200, Number(url.searchParams.get('limit')) || 50),
+      }),
+    });
+  });
+
+  // ── 话题（#标签）────────────────────────────────────
+  add('GET', '/api/groups/:id/topics', ({ res, user, params }) => {
+    const g = store.groups.byId(params.id);
+    if (!g) return fail(res, 404, 'group_not_found', '群组不存在');
+    if (!store.members.isActive(g.id, user.id)) {
+      return fail(res, 403, 'not_a_member', '你不是该群成员');
+    }
+    return json(res, 200, { ok: true, topics: store.messages.topics(g.id) });
+  });
 
   // ── 管理台（审计 / 指标 / 台账查询）───────────────
   add(
