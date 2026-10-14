@@ -10,32 +10,32 @@
 }
 
 :root {
-  --bg: #f3f6f5;
-  --bg-sunk: #eef2f1;
-  --bg-hover: #e8eeec;
+  --bg: #f2f3f5;
+  --bg-sunk: #eceef1;
+  --bg-hover: #e8eaee;
   --card: #ffffff;
-  --ink: #10201e;
-  --ink-2: #4b5a57;
-  --ink-3: #64716d;
-  --line: #e1e8e6;
-  --line-strong: #cbd6d3;
-  --link: #0d8074;
-  --link-visited: #0d8074;
-  --accent: #0d9488;
-  --accent-deep: #0b7d73;
-  --accent-soft: #e3f4f1;
-  --accent-ink: #0b6157;
-  --danger: #c62f2f;
-  --danger-soft: #fdeeee;
-  --ok: #1c8a4e;
-  --warn: #96650f;
+  --ink: #1f2329;
+  --ink-2: #464d54;
+  --ink-3: #646a73;
+  --line: #e5e7eb;
+  --line-strong: #c9cdd4;
+  --link: #3370ff;
+  --link-visited: #3370ff;
+  --accent: #3370ff;
+  --accent-deep: #2861e0;
+  --accent-soft: #eef3fe;
+  --accent-ink: #2456c8;
+  --danger: #d83931;
+  --danger-soft: #fdebe9;
+  --ok: #23a047;
+  --warn: #a06c00;
   --radius: 10px;
-  --radius-sm: 7px;
+  --radius-sm: 8px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
     "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, "Courier New", monospace;
   --topbar-h: 56px;
-  --bubble-mine: #0a6b62;
+  --bubble-mine: #2b5fdd;
 }
 
 * { box-sizing: border-box; }
@@ -206,7 +206,8 @@ form[aria-busy="true"] { opacity: .7; }
 .msg-time { color: var(--ink-3); font-size: 11.5px; }
 .msg-body {
   max-width: 66ch; white-space: pre-wrap; overflow-wrap: anywhere;
-  background: var(--card); border: 1px solid var(--line);
+  background: var(--card); border: 1px solid transparent;
+  box-shadow: 0 1px 2px rgba(31, 35, 41, .06);
   border-radius: 2px var(--radius-sm) var(--radius-sm) var(--radius-sm);
   padding: 7px 12px; margin-top: 2px;
 }
