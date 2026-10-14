@@ -58,9 +58,9 @@
           "-z",
           "{prompt}"
         ],
-        "timeoutMs": 180000
+        "timeoutMs": 300000
       },
-      "unavailable": "无法应答：Hermes 模型通道连接失败（`hermes -z` 返回 API call failed: Connection error），需要检查 Hermes 的模型/API Key 配置。"
+      "unavailable": "无法应答：Hermes 这次没答上来（`hermes -z` 失败或超过席位时限）。先查 智谱 通道是否被限流（1302 速率限制 / 1113 无资源包），再看 GLM-5.3-Flash 是否在时限内答完——这条模型会先写一大段 reasoning，慢的时候容易顶到上限。"
     },
     {
       "key": "ekko",
