@@ -3,7 +3,7 @@
 自建 Web 群聊：**建群 / 邀请成员 / 实时收发 / 历史回溯 / 断线补齐不丢不重 / 引用回复 / 历史搜索 / 智能体状态牌 / 成员与权限管理 / 审计台账 / 可观测性**。
 
 - 零第三方依赖：只用 Node.js 内置模块（`node:http`、`node:crypto`、`node:sqlite`）与一段自实现的 RFC6455 WebSocket 服务端。
-- 前端为单页原生 JS + CSS，系统字体、零装饰（Information Architects 风格），桌面与移动自适应。
+- 前端为单页原生 JS + CSS，系统字体、Flat Design 风格（teal 主色、气泡消息、#话题筛选），桌面与移动自适应。
 - 数据落在 SQLite（WAL 模式），带审计台账与指标接口。
 
 ---

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>群聊</title>
 <meta name="description" content="自建群聊：实时消息、历史回溯、断线补齐、成员与权限管理">
-<link rel="stylesheet" href="/styles.css?v=5">
+<link rel="stylesheet" href="/styles.css?v=7">
 </head>
 <body>
 <a class="skip-link" href="#composer-input">跳到输入框</a>
@@ -47,7 +47,7 @@
 <!-- ── 主应用 ─────────────────────────────────────── -->
 <div id="app-view" class="app" hidden>
   <header class="topbar">
-    <button class="btn btn-ghost icon-btn" id="btn-toggle-sidebar" aria-label="打开会话列表" aria-expanded="false">☰</button>
+    <button class="btn btn-ghost icon-btn" id="btn-toggle-sidebar" aria-label="打开会话列表" aria-expanded="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
     <div class="topbar-main">
       <h1 class="group-title" id="group-title">选择一个群</h1>
       <div class="group-meta" id="group-meta"></div>
@@ -85,11 +85,12 @@
 
     <!-- 主区 -->
     <section class="main" aria-label="消息区">
-      <div class="messages" id="messages" tabindex="0" role="log" aria-live="polite" aria-relevant="additions">
-        <p class="empty-state" id="messages-empty" hidden>这里还没有消息，说点什么吧。</p>
-      </div>
+      <div class="topic-filter" id="topic-filter" hidden></div>
       <div class="loadmore" id="loadmore" hidden>
         <button class="btn btn-ghost" id="btn-load-older">加载更早的消息</button>
+      </div>
+      <div class="messages" id="messages" tabindex="0" role="log" aria-live="polite" aria-relevant="additions">
+        <p class="empty-state" id="messages-empty" hidden>这里还没有消息，说点什么吧。</p>
       </div>
 
       <div class="reply-chip" id="reply-chip" hidden></div>
@@ -121,6 +122,6 @@
 
 <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 
-<script type="module" src="/app.js?v=6"></script>
+<script type="module" src="/app.js?v=8"></script>
 </body>
 </html>
