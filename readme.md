@@ -1,9 +1,9 @@
 # 群聊（auto-group-chat）
 
-自建 Web 群聊：**建群 / 邀请成员 / 实时收发 / 历史回溯 / 断线补齐不丢不重 / 引用回复 / 历史搜索 / 智能体状态牌 / 成员与权限管理 / 审计台账 / 可观测性**。
+自建 Web 群聊：**建群 / 邀请成员 / 实时收发 / 历史回溯 / 断线补齐不丢不重 / 引用回复 / 历史搜索 / #话题筛选 / 智能体状态牌 / 成员与权限管理 / Agent 运行台账 / 审计台账 / 可观测性**。
 
 - 零第三方依赖：只用 Node.js 内置模块（`node:http`、`node:crypto`、`node:sqlite`）与一段自实现的 RFC6455 WebSocket 服务端。
-- 前端为单页原生 JS + CSS，系统字体、Flat Design 风格（teal 主色、气泡消息、#话题筛选），桌面与移动自适应。
+- 前端为单页原生 JS + CSS，系统字体、飞书式简约风格（灰底白卡、蓝色气泡消息、话题 chip），桌面与移动自适应。
 - 数据落在 SQLite（WAL 模式），带审计台账与指标接口。
 
 ---
@@ -81,7 +81,7 @@ group-chat/
 ├─ db/schema.sql      建表与索引（幂等）
 ├─ scripts/           migrate.mjs、start-dev.ps1、start-dev.sh
 ├─ tests/
-│  ├─ smoke.mjs       端到端自检（43 项断言）
+│  ├─ smoke.mjs       端到端自检（79 项断言）
 │  └─ loadtest.mjs    容量压测（默认 500 连接）
 └─ docs/              部署 / 验收 / 异常路径 / 可观测 / 回滚 / 交接
 ```
@@ -105,7 +105,7 @@ group-chat/
 ```bash
 npm start          # 启动服务
 npm run migrate    # 初始化/升级数据库结构
-npm test           # 端到端自检（43 项断言）
+npm test           # 端到端自检（79 项断言）
 npm run loadtest   # 容量压测（默认 500 连接）
 npm run drill      # 回滚演练（备份 → 校验 → 恢复 → 比对）
 npm run capture    # 用无头 Chrome 对真实页面截图（需先启动服务）
