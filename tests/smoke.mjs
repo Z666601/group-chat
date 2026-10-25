@@ -615,6 +615,83 @@ try {
       (failMsgs[0]?.body || '').slice(0, 20),
     );
 
+    // 降级链契约：主大脑挂掉且配了 fallback 时，换通道重试并带「（tag作答）」前缀，
+    // 而不是直接发「无法应答」。独立探针群验证，不搅动上面三个探针的 PID 断言。
+    console.log('\n── 10e. 大脑降级链（主大脑挂→fallback 接管）──────');
+    {
+      const dir2 = path.join(DATA_DIR, 'agents-degrade-probe');
+      fs.rmSync(dir2, { recursive: true, force: true });
+      fs.mkdirSync(dir2, { recursive: true });
+      const cfg2 = path.join(dir2, 'agents.config.json');
+      const tok2 = path.join(dir2, 'tokens.local.json');
+      const pid2 = path.join(dir2, 'bridge-pids.json');
+      const DEGRADE_ANSWER = '降级探针后备通道回答';
+      const DEGRADE_UNAVAILABLE = '无法应答：降级探针也不该走到这条话术';
+      fs.writeFileSync(cfg2, JSON.stringify({
+        server: BASE,
+        agents: [{
+          key: 'probedegrade', name: '降级探针', avatar: '🛟', trigger: 'mention',
+          replyToAgents: false, supportsModel: false, unavailable: DEGRADE_UNAVAILABLE,
+          // 主大脑=固定失败样本（stdout 空 + exit≠0）；fallback=纯 echo，零外部依赖
+          brain: { type: 'cmd', command: process.execPath, args: ['-e', 'process.exit(3)'], timeoutMs: 20000 },
+          fallback: {
+            type: 'cmd', command: process.execPath, args: ['-e', `console.log("${DEGRADE_ANSWER}")`],
+            timeoutMs: 15000, tag: '本地降级',
+          },
+        }],
+      }, null, 2));
+      const PENV2 = { ...PENV, GC_AGENTS_CONFIG: cfg2, GC_TOKENS_FILE: tok2, GC_BRIDGE_PIDS: pid2 };
+      // runUntilExit 闭包写死用 PENV，这里必须用 PENV2，所以自带一个同款 runner
+      const prov2 = await new Promise((resolve) => {
+        const c = spawn(process.execPath, ['--no-warnings', 'agents/provision.mjs',
+          '--group=自检降级探针群', '--owner=degrade_owner', '--password=degrade_pass_123'], {
+          cwd: ROOT, env: PENV2, stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        spawnedPids.push(c.pid);
+        const getOut = drain(c);
+        const timer = setTimeout(() => { try { c.kill(); } catch {} resolve({ code: null, out: getOut() }); }, 20000);
+        c.on('close', (code) => { clearTimeout(timer); resolve({ code, out: getOut() }); });
+      });
+      check('降级探针群发放令牌成功', prov2.code === 0, `code=${prov2.code} ${prov2.out.slice(-80).replace(/\s+/g, ' ')}`);
+      const tokFile2 = JSON.parse(fs.readFileSync(tok2, 'utf8'));
+      const bridge2 = spawn(process.execPath, ['--no-warnings', 'agents/bridge.mjs', '--key=probedegrade'], {
+        cwd: ROOT, env: PENV2, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+      });
+      spawnedPids.push(bridge2.pid);
+      const bridgeOut = drain(bridge2);
+      const degradeOnline = async () => {
+        const r = await api(`/groups/${tokFile2.groupId}`, { token: tokFile2.ownerToken });
+        return (r.data.members || []).some((m) => m.agentKey === 'probedegrade' && m.online);
+      };
+      let up2 = false;
+      for (let i = 0; i < 40; i++) {
+        if ((up2 = await degradeOnline())) break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      check('降级探针桥接器上线', up2, bridgeOut().split('\n').slice(-2).join(' ').slice(0, 80));
+      const postDegrade = await api(`/groups/${tokFile2.groupId}/messages`, {
+        method: 'POST', token: tokFile2.ownerToken, body: { text: '请降级探针回一句' },
+      });
+      check('向降级探针群发议题成功', postDegrade.status === 201 || postDegrade.status === 200, `status=${postDegrade.status}`);
+      let degradeMsgs = [];
+      for (let i = 0; i < 60; i++) {
+        const r = await api(`/groups/${tokFile2.groupId}/messages?limit=50`, { token: tokFile2.ownerToken });
+        degradeMsgs = (r.data.messages || []).filter((m) => m.senderName === '降级探针');
+        if (degradeMsgs.length) break;
+        await new Promise((res) => setTimeout(res, 250));
+      }
+      check(
+        '主大脑挂掉时降级链接管应答（带降级标记）',
+        degradeMsgs.length === 1 && degradeMsgs[0].body === `（本地降级作答）\n${DEGRADE_ANSWER}`,
+        `条数=${degradeMsgs.length} 原文=${JSON.stringify(String(degradeMsgs[0]?.body ?? '').slice(0, 40))}`,
+      );
+      check(
+        '降级成功不发「无法应答」道歉、成员状态仍在线',
+        degradeMsgs.every((m) => m.body !== DEGRADE_UNAVAILABLE) && (await degradeOnline()),
+        `道歉=${degradeMsgs.filter((m) => m.body === DEGRADE_UNAVAILABLE).length}`,
+      );
+    }
+
     // 掉线自愈：杀掉一个桥接器，下一轮只该补它，不能被「pid 表里有活的」一刀切跳过
     const beforeKill = readPidTable();
     check('两轮后 PID 表仍如实记录三条活口', beforeKill.length === 3, JSON.stringify(beforeKill));

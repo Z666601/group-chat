@@ -258,9 +258,22 @@ function runLocal(prompt, history) {
 
 async function think({ history, prompt }) {
   const spec = agent.brain || {};
-  if (spec.type === 'local') return runLocal(prompt, history);
-  if (spec.type === 'http') return runHttp(spec, prompt, currentModel);
-  return runCmd(spec, prompt, currentModel);
+  try {
+    if (spec.type === 'local') return await runLocal(prompt, history);
+    if (spec.type === 'http') return await runHttp(spec, prompt, currentModel);
+    return await runCmd(spec, prompt, currentModel);
+  } catch (err) {
+    // 降级链：主大脑挂掉（限流/超时/CLI 崩）时按 fallback 配置换通道重试一次，
+    // 成功则以「（tag作答）」前缀发言，群里能看出这轮不是主模型答的。
+    // local 演示大脑没有降级的意义，失败原样抛出走「无法应答」话术。
+    const fb = agent.fallback;
+    if (!fb || spec.type === 'local') throw err;
+    log('主大脑失败，尝试降级链：', String(err?.message || err).slice(0, 100));
+    const text = fb.type === 'http'
+      ? await runHttp(fb, prompt, currentModel)
+      : await runCmd(fb, prompt, currentModel);
+    return `（${fb.tag || '降级通道'}作答）\n${text}`;
+  }
 }
 
 // ── 当前所选模型（由界面设置，存在服务端）──────────
