@@ -319,3 +319,51 @@ body::before { animation: bg-drift 46s ease-in-out infinite alternate; }
   .fx-halo { display: none; }
   #messages.fx-pulse::before { animation: none; }
 }
+
+/* ── WebGL 星云 ─────────────────────────────────────── */
+.fx-nebula {
+  position: fixed; inset: 0; width: 100%; height: 100%;
+  z-index: 0; pointer-events: none;
+  opacity: .62; filter: blur(2px) saturate(115%);
+  mix-blend-mode: screen;
+}
+
+/* ── Ctrl+K 指挥舱 ──────────────────────────────────── */
+.fx-palette-backdrop {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(3, 6, 14, .55);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  display: grid; place-items: start center; padding-top: 13vh;
+}
+.fx-palette {
+  width: min(580px, 92vw);
+  background: linear-gradient(180deg, rgba(16, 24, 42, .96), rgba(9, 14, 26, .96));
+  border: 1px solid rgba(99, 230, 255, .26);
+  border-radius: 16px;
+  box-shadow: 0 0 0 1px rgba(99, 230, 255, .08), 0 40px 90px -50px #000, 0 0 60px -30px rgba(99, 230, 255, .5);
+  overflow: hidden;
+}
+.fx-palette-input {
+  width: 100%; padding: 16px 18px;
+  background: transparent; border: 0; outline: none;
+  color: var(--ink); font-size: 16px;
+  border-bottom: 1px solid var(--line);
+}
+.fx-palette-input::placeholder { color: var(--ink-3); }
+.fx-palette-list { max-height: 46vh; overflow-y: auto; padding: 6px; }
+.fx-palette-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; border-radius: 10px; cursor: pointer;
+}
+.fx-palette-item.active {
+  background: rgba(99, 230, 255, .10);
+  box-shadow: inset 0 0 0 1px rgba(99, 230, 255, .22);
+}
+.fx-palette-title { font-size: 14px; }
+.fx-palette-hint { font-size: 11px; color: var(--ink-3); font-family: var(--mono); letter-spacing: .06em; }
+.fx-palette-empty { padding: 18px; color: var(--ink-3); text-align: center; }
+.fx-palette-foot {
+  display: flex; gap: 16px; padding: 9px 14px;
+  border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--ink-3); font-family: var(--mono);
+}
