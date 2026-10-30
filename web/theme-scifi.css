@@ -324,7 +324,7 @@ body::before { animation: bg-drift 46s ease-in-out infinite alternate; }
 .fx-nebula {
   position: fixed; inset: 0; width: 100%; height: 100%;
   z-index: 0; pointer-events: none;
-  opacity: .62; filter: blur(2px) saturate(115%);
+  opacity: .62;
   mix-blend-mode: screen;
 }
 

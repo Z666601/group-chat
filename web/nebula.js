@@ -1,4 +1,5 @@
-/* WebGL 星云背景：GPU shader 流动极光，鼠标可拨动。低分辨率渲染 + 30fps 上限。 */
+/* WebGL 星云背景：GPU shader 流动极光，鼠标可拨动。
+   性能策略：自适应分辨率 + 3 层噪声 + 空闲降帧 + 迟滞降采样；无 CSS 模糊。 */
 (function () {
   'use strict';
   if (document.documentElement.dataset.nebula === '1') return;
@@ -11,8 +12,11 @@
   canvas.className = 'fx-nebula';
   canvas.setAttribute('aria-hidden', 'true');
 
-  var gl = canvas.getContext('webgl', { antialias: false, alpha: true, depth: false, powerPreference: 'low-power' }) ||
-           canvas.getContext('experimental-webgl');
+  var gl = canvas.getContext('webgl', {
+    antialias: false, alpha: true, depth: false, stencil: false,
+    premultipliedAlpha: true, preserveDrawingBuffer: false,
+    powerPreference: 'low-power', desynchronized: true
+  }) || canvas.getContext('experimental-webgl', { antialias: false, alpha: true, depth: false });
   if (!gl) return;
 
   var VS = 'attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}';
@@ -22,7 +26,7 @@
     'float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}',
     'float noise(vec2 p){vec2 i=floor(p),f=fract(p);vec2 u=f*f*(3.-2.*f);',
     ' return mix(mix(hash(i),hash(i+vec2(1.,0.)),u.x),mix(hash(i+vec2(0.,1.)),hash(i+vec2(1.,1.)),u.x),u.y);}',
-    'float fbm(vec2 p){float v=0.,a=.5;for(int i=0;i<5;i++){v+=a*noise(p);p*=2.03;a*=.5;}return v;}',
+    'float fbm(vec2 p){float v=0.,a=.55;for(int i=0;i<3;i++){v+=a*noise(p);p*=2.07;a*=.55;}return v;}',
     'void main(){',
     ' vec2 uv=gl_FragCoord.xy/u_res.xy;',
     ' float ar=u_res.x/u_res.y;',
@@ -31,15 +35,14 @@
     ' float t=u_time*.045;',
     ' p+=m*.07;',
     ' float n=fbm(p*1.7+vec2(t*.6,-t*.4));',
-    ' float n2=fbm(p*2.5+vec2(-t*.5,t*.65)+n*.55);',
+    ' float n2=fbm(p*2.6+vec2(-t*.5,t*.65)+n*.5);',
     ' float band=smoothstep(.34,.86,n*.45+n2*.55);',
     ' vec3 c1=vec3(.16,.28,.85);',
     ' vec3 c2=vec3(.10,.72,.84);',
     ' vec3 c3=vec3(.46,.36,.88);',
     ' vec3 col=mix(c1,c2,smoothstep(.2,.8,n));',
     ' col=mix(col,c3,smoothstep(.35,.92,n2));',
-    ' float glow=band*(.30+.40*n);',
-    ' gl_FragColor=vec4(col*glow,1.);',
+    ' gl_FragColor=vec4(col*band*(.30+.40*n),1.);',
     '}'
   ].join('\n');
 
@@ -68,13 +71,15 @@
   var uMouse = gl.getUniformLocation(prog, 'u_mouse');
 
   var W = 1, H = 1, mx = 0.5, my = 0.5, tmx = 0.5, tmy = 0.5;
-  var SCALE = 0.55;
+  var SCALE = 0.42;
+  var ema = 16, lastDraw = 0, lastMove = 0, lastScale = 0, t0 = performance.now(), raf = 0;
 
   function resize() {
-    W = Math.max(2, Math.floor(window.innerWidth * SCALE));
-    H = Math.max(2, Math.floor(window.innerHeight * SCALE));
-    canvas.width = W;
-    canvas.height = H;
+    var h = Math.max(2, Math.floor(window.innerHeight * SCALE));
+    var w = Math.max(2, Math.floor(window.innerWidth * SCALE));
+    if (w === W && h === H) return;
+    W = w; H = h;
+    canvas.width = W; canvas.height = H;
     gl.viewport(0, 0, W, H);
     gl.uniform2f(uRes, W, H);
   }
@@ -82,20 +87,37 @@
   window.addEventListener('mousemove', function (e) {
     tmx = e.clientX / window.innerWidth;
     tmy = 1 - e.clientY / window.innerHeight;
+    lastMove = performance.now();
   }, { passive: true });
   window.addEventListener('resize', resize);
 
   document.body.insertBefore(canvas, document.body.firstChild);
   resize();
 
-  var last = 0, raf = 0, t0 = performance.now();
   function frame(now) {
     raf = window.requestAnimationFrame(frame);
     if (document.hidden) return;
-    if (now - last < 33) return; // ≈30fps
-    last = now;
-    mx += (tmx - mx) * 0.05;
-    my += (tmy - my) * 0.05;
+
+    var idleFor = now - lastMove;
+    var interval = idleFor > 1800 ? 50 : 33; // 空闲 20fps，交互 30fps
+    if (now - lastDraw < interval - 1) return;
+    if (lastDraw) ema = ema * 0.9 + (now - lastDraw) * 0.1;
+    lastDraw = now;
+
+    // 迟滞降采样：持续掉帧降一档；长期宽裕再慢慢升回去
+    if (ema > 52 && SCALE > 0.28 && now - lastScale > 2500) {
+      SCALE = Math.max(0.28, SCALE * 0.85);
+      resize();
+      ema = 33;
+      lastScale = now;
+    } else if (ema < 22 && SCALE < 0.42 && now - lastScale > 12000) {
+      SCALE = Math.min(0.42, SCALE * 1.12);
+      resize();
+      lastScale = now;
+    }
+
+    mx += (tmx - mx) * 0.06;
+    my += (tmy - my) * 0.06;
     gl.uniform1f(uTime, (now - t0) / 1000);
     gl.uniform2f(uMouse, mx, my);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -103,6 +125,7 @@
   raf = window.requestAnimationFrame(frame);
 
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) t0 = performance.now() - 1000;
+    if (!document.hidden) { t0 = performance.now() - 1000; lastDraw = 0; }
   });
+  window.addEventListener('beforeunload', function () { window.cancelAnimationFrame(raf); });
 })();
