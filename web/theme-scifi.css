@@ -285,3 +285,37 @@ body::before { animation: bg-drift 46s ease-in-out infinite alternate; }
   .boot-splash__mark::before, .boot-splash__mark::after { animation: none; }
   .fx-ticker__dot { animation: none; }
 }
+
+/* ── 炫技层 B：光标光晕 / 气泡高光 / 新消息脉冲 ───────── */
+.fx-halo {
+  position: fixed; left: 0; top: 0; width: 340px; height: 340px;
+  border-radius: 50%; pointer-events: none; z-index: 3;
+  background: radial-gradient(circle, rgba(99, 230, 255, .16) 0%, rgba(120, 110, 255, .10) 38%, transparent 68%);
+  mix-blend-mode: screen; filter: blur(14px); opacity: .85;
+  will-change: transform;
+}
+.msg-body { position: relative; overflow: hidden; }
+.msg-body::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  background: radial-gradient(180px 120px at var(--mx, 50%) var(--my, 50%), rgba(120, 190, 255, .16), transparent 70%);
+  opacity: 0; transition: opacity .2s ease; pointer-events: none;
+}
+.msg-body:hover::after { opacity: 1; }
+.msg.mine .msg-body::after {
+  background: radial-gradient(180px 120px at var(--mx, 50%) var(--my, 50%), rgba(255, 255, 255, .22), transparent 70%);
+}
+#messages.fx-pulse::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 1;
+  background: radial-gradient(60% 40% at 50% 100%, rgba(99, 230, 255, .10), transparent 70%);
+  animation: fx-pulse-glow .9s ease-out both;
+}
+#messages { position: relative; }
+@keyframes fx-pulse-glow {
+  from { opacity: 0; }
+  18% { opacity: 1; }
+  to { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-halo { display: none; }
+  #messages.fx-pulse::before { animation: none; }
+}
