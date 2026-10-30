@@ -1,0 +1,133 @@
+/* ─────────────────────────────────────────────────────────
+   群聊 · 开机启动动画 + 新消息入场（新增文件，不改现有样式）
+   全部类名用 boot- 前缀；#boot-splash 由 boot.js 注入。
+   关闭：给 <body> 加 class="no-boot-motion"；系统开启
+   「减少动态效果」时自动关闭。
+   z-index 55：低于 toasts(60) 与 modal(80)，不遮提示与弹窗。
+   ───────────────────────────────────────────────────────── */
+
+/* ── 开机 splash ───────────────────────────────────── */
+#boot-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  pointer-events: none; /* 纯视觉层：从不拦截点击、滚动或键盘焦点 */
+  user-select: none;
+  background:
+    radial-gradient(120% 90% at 50% -12%, #ffffff 0%, rgba(255, 255, 255, 0) 62%),
+    repeating-linear-gradient(0deg, rgba(21, 24, 29, .014) 0 1px, transparent 1px 3px),
+    var(--bg, #f5f6f8);
+  opacity: 1;
+  transition: opacity .2s ease-out, visibility 0s linear 0s;
+}
+
+#boot-splash.is-out {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .2s ease-out, visibility 0s linear .2s;
+}
+
+.boot-splash__stack {
+  display: grid;
+  justify-items: center;
+  gap: 20px;
+  animation: boot-stack-in .36s cubic-bezier(.22, 1, .36, 1) both;
+}
+
+.boot-splash__mark {
+  position: relative;
+  width: 78px;
+  height: 78px;
+  display: grid;
+  place-items: center;
+}
+
+.boot-splash__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(59, 91, 219, .18);
+  animation: boot-breathe 1.9s cubic-bezier(.45, 0, .55, 1) infinite;
+}
+
+.boot-splash__ring::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--accent, #3b5bdb);
+  border-right-color: rgba(59, 91, 219, .3);
+  animation: boot-spin 2.6s linear infinite;
+}
+
+.boot-splash__badge {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #fff;
+  color: var(--accent-ink, #2a44a8);
+  font-family: var(--font, system-ui, sans-serif);
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow:
+    0 12px 28px rgba(59, 91, 219, .14),
+    inset 0 0 0 1px rgba(59, 91, 219, .08);
+}
+
+.boot-splash__word {
+  margin: 0;
+  padding-left: .34em;
+  color: var(--accent-ink, #2a44a8);
+  font-family: var(--font, system-ui, sans-serif);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: .34em;
+}
+
+@keyframes boot-stack-in {
+  from { opacity: 0; transform: translateY(10px) scale(.985); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes boot-breathe {
+  0%, 100% { transform: scale(.96); opacity: .55; }
+  50% { transform: scale(1.04); opacity: 1; }
+}
+
+@keyframes boot-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 新消息入场 ────────────────────────────────────── */
+.msg.boot-msg-in {
+  animation: boot-msg-in 160ms cubic-bezier(.22, .61, .36, 1) both;
+  animation-delay: var(--boot-msg-delay, 0ms);
+}
+
+@keyframes boot-msg-in {
+  from { opacity: 0; transform: translate3d(0, 6px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+/* ── 关闭开关 ─────────────────────────────────────── */
+body.no-boot-motion #boot-splash { display: none !important; }
+body.no-boot-motion .boot-msg-in { animation: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  #boot-splash { display: none !important; }
+  .boot-splash__stack,
+  .boot-splash__ring,
+  .boot-splash__ring::after { animation: none !important; }
+  .boot-msg-in {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

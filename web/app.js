@@ -70,7 +70,7 @@ function initials(name) {
   return s.slice(0, 1).toUpperCase();
 }
 function colorFor(id) {
-  const palette = ['#4b5563', '#7c3aed', '#0f766e', '#b45309', '#be123c', '#1d4ed8', '#065f46', '#7c2d12'];
+  const palette = ['#5b6cff', '#c97b3c', '#17a398', '#c25e8a', '#7a6bd6', '#3e86b5'];
   let h = 0;
   for (const ch of String(id)) h = (h * 31 + ch.charCodeAt(0)) % 997;
   return palette[h % palette.length];
@@ -267,6 +267,11 @@ async function refreshGroups() {
     const data = await api('/groups');
     state.groups = data.groups || [];
     renderGroups();
+    if (!state.currentGroupId && state.groups.length && !state.autoPicked) {
+      state.autoPicked = true;
+      selectGroup(state.groups[0].id);
+      return;
+    }
     if (state.currentGroupId && !state.groups.find((g) => g.id === state.currentGroupId)) {
       state.currentGroupId = null;
       state.group = null;
@@ -563,7 +568,7 @@ function buildMessage(m, prev) {
 
   const av = document.createElement('div');
   av.className = 'msg-avatar' + (m.senderKind === 'agent' ? ' agent' : '');
-  av.style.background = m.senderKind === 'agent' ? '#16181a' : colorFor(m.senderId);
+  if (m.senderKind !== 'agent') av.style.background = colorFor(m.senderId);
   av.textContent = m.senderAvatar && m.senderKind === 'agent'
     ? m.senderAvatar
     : initials(m.senderName || m.senderUsername);
@@ -1061,7 +1066,7 @@ $('file-input').addEventListener('change', async (e) => {
     const data = await api('/uploads', {
       method: 'POST',
       raw: file,
-      headers: { 'content-type': file.type, 'x-filename': file.name },
+      headers: { 'content-type': file.type, 'x-filename': file.name, 'x-group-id': state.currentGroupId },
     });
     note.textContent = '';
     const clientMsgId = uid();
@@ -1587,7 +1592,7 @@ window.addEventListener('offline', () => {
 // 本机免密进入：由服务端判定远端地址，前端只是试着要一个会话，失败就回落到密码登录表单
 async function localAutologin() {
   try {
-    const data = await api('/local', { method: 'POST', body: {} });
+    const data = await api('/auth/local', { method: 'POST', body: {} });
     state.token = data.token;
     state.me = data.user;
     localStorage.setItem(TOKEN_KEY, data.token);

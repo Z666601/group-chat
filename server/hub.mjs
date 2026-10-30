@@ -228,6 +228,14 @@ export function createHub({ log, metrics, limits = {} }) {
       deny(conn, 'attachment_not_found', '图片不存在或已失效', { clientMsgId });
       return;
     }
+    if (att.group_id && att.group_id !== groupId) {
+      deny(conn, 'attachment_group_mismatch', '图片不属于该群', { clientMsgId });
+      return;
+    }
+    if (!att.group_id && att.uploader_id !== conn.user?.id) {
+      deny(conn, 'attachment_forbidden', '图片不属于你', { clientMsgId });
+      return;
+    }
     persistAndFanout(conn, {
       groupId,
       clientMsgId,

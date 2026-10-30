@@ -1,0 +1,120 @@
+/* ─────────────────────────────────────────────────────────
+   scifi-fx —— 群聊炫技层（只新增类，不改既有规则本身）
+   总闸：<body class="no-fx">；所有层 pointer-events:none
+   层序：canvas 0 → 应用内容 1 → HUD/扫描 2（.main 内）
+         topbar 20 / toasts 60 / modal 80 原样不动
+   折动：prefers-reduced-motion 下不建 canvas、不跑扫描/光迹
+   ───────────────────────────────────────────────────────── */
+
+/* 1. 星座粒子：全屏固定，压在 body::before(星云)/::after(网格) 之上 */
+.sfx-stars {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* 应用整体抬一层，让内容永远压住粒子；只动 z 轴，不改布局 */
+#app-view {
+  position: relative;
+  z-index: 1;
+}
+
+/* 2 + 3. HUD 角标 + 扫描线：盖在 .messages 可见区上的一层 */
+.sfx-hud {
+  position: absolute;
+  z-index: 2;
+  overflow: hidden;
+  contain: paint;
+  pointer-events: none;
+}
+
+.sfx-corner {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border: 1px solid rgba(99, 230, 255, .30);
+  pointer-events: none;
+}
+.sfx-corner.tl { top: 8px; left: 8px; border-right: 0; border-bottom: 0; border-top-left-radius: 3px; }
+.sfx-corner.tr { top: 8px; right: 8px; border-left: 0; border-bottom: 0; border-top-right-radius: 3px; }
+.sfx-corner.bl { bottom: 8px; left: 8px; border-right: 0; border-top: 0; border-bottom-left-radius: 3px; }
+.sfx-corner.br { bottom: 8px; right: 8px; border-left: 0; border-top: 0; border-bottom-right-radius: 3px; }
+
+/* 一条 22% 高的柔光带随整层平移；位移只走 transform，不触发重排 */
+.sfx-scan {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 100%;
+  background-image: linear-gradient(
+    180deg,
+    rgba(99, 230, 255, 0) 0%,
+    rgba(99, 230, 255, 1) 18%,
+    rgba(139, 124, 255, .9) 50%,
+    rgba(99, 230, 255, 1) 82%,
+    rgba(99, 230, 255, 0) 100%
+  );
+  background-repeat: no-repeat;
+  background-size: 100% 22%;
+  opacity: .05; /* 峰值不透明度即 0.05 */
+  animation: sfx-scan 8s linear infinite;
+  will-change: transform;
+  pointer-events: none;
+}
+@keyframes sfx-scan {
+  from { transform: translate3d(0, -100%, 0); }
+  to   { transform: translate3d(0, 100%, 0); }
+}
+
+/* 4. 消息入场光迹：只碰 opacity / transform / box-shadow */
+.msg.sfx-in {
+  animation: sfx-msg-in 220ms cubic-bezier(.2, .7, .3, 1) both;
+}
+@keyframes sfx-msg-in {
+  0% {
+    opacity: .4;
+    transform: translate3d(0, 6px, 0);
+    box-shadow: 0 0 0 0 rgba(99, 230, 255, 0);
+  }
+  55% {
+    opacity: 1;
+    box-shadow: inset 0 0 0 1px rgba(99, 230, 255, .22), 0 0 26px -8px rgba(99, 230, 255, .35);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+    box-shadow: 0 0 0 0 rgba(99, 230, 255, 0);
+  }
+}
+
+/* 5. 总闸 */
+body.no-fx .sfx-stars,
+body.no-fx .sfx-hud {
+  display: none !important;
+}
+body.no-fx .msg.sfx-in {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sfx-scan {
+    display: none !important;
+    animation: none !important;
+  }
+  .msg.sfx-in {
+    animation: none !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .sfx-corner { width: 12px; height: 12px; }
+  .sfx-corner.tl, .sfx-corner.tr { top: 6px; }
+  .sfx-corner.bl, .sfx-corner.br { bottom: 6px; }
+  .sfx-corner.tl, .sfx-corner.bl { left: 6px; }
+  .sfx-corner.tr, .sfx-corner.br { right: 6px; }
+}
