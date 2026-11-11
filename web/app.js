@@ -1318,7 +1318,8 @@ function renderMembers() {
       if (m.supportsModel === false) {
         const na = document.createElement('span');
         na.className = 'member-model na';
-        na.textContent = '模型：不适用（内置大脑）';
+        na.textContent = '内置大脑';
+        na.title = '该成员使用内置大脑，不接外部大模型';
         li.appendChild(na);
       } else {
         const wrapEl = document.createElement('div');
@@ -1363,9 +1364,10 @@ function renderMembers() {
 
     if (g.role === 'owner' && m.role !== 'owner') {
       const rm = document.createElement('button');
-      rm.className = 'btn btn-ghost icon-btn';
+      rm.className = 'btn btn-ghost icon-btn member-remove';
       rm.type = 'button';
-      rm.textContent = '移除';
+      rm.setAttribute('aria-label', `将 ${m.displayName} 移出群聊`);
+      rm.textContent = '×';
       rm.title = `将 ${m.displayName} 移出群聊`;
       rm.addEventListener('click', async () => {
         const ok = await modal({
@@ -1389,6 +1391,191 @@ function renderMembers() {
     list.appendChild(li);
   }
 }
+
+// ── 调度台面板：会议 / 任务台账 / 最近判定（数据来自 monitor 落盘状态）──
+let dispatcherTimer = null;
+
+async function renderDispatcher() {
+  const body = $('dispatcher-body');
+  if (!body || $('dispatcher-panel').hidden || !state.currentGroupId) return;
+  let data = null;
+  try {
+    data = await api(`/groups/${state.currentGroupId}/dispatcher`);
+  } catch (err) {
+    body.innerHTML = '';
+    const p = document.createElement('p');
+    p.className = 'dispatcher-empty';
+    p.textContent = '调度台状态拉取失败：' + err.message;
+    body.appendChild(p);
+    return;
+  }
+  if (!data?.ok) return;
+  body.innerHTML = '';
+
+  // 会议卡
+  const meet = document.createElement('section');
+  meet.className = 'dispatcher-section';
+  const meetHead = document.createElement('h3');
+  meetHead.className = 'dispatcher-title';
+  meetHead.textContent = '会议';
+  meet.appendChild(meetHead);
+  const m = data.meeting || {};
+  const meetCard = document.createElement('div');
+  meetCard.className = 'dispatcher-meeting' + (m.active ? ' active' : '');
+  if (m.active) {
+    const remain = Math.max(0, Math.round((Date.parse(m.endTime) - Date.now()) / 60000));
+    const topic = document.createElement('div');
+    topic.className = 'dispatcher-meeting-topic';
+    topic.textContent = m.topic || '（无议题）';
+    const meta = document.createElement('div');
+    meta.className = 'dispatcher-meeting-meta';
+    meta.textContent = `第 ${m.usedRounds}/${m.maxRounds} 轮 · 约 ${remain} 分钟后自动散会`;
+    const stop = document.createElement('button');
+    stop.className = 'btn btn-ghost dispatcher-cmd';
+    stop.type = 'button';
+    stop.textContent = '散会';
+    stop.addEventListener('click', () => sendDispatcherCommand('调度台 散会'));
+    meetCard.append(topic, meta, stop);
+  } else {
+    const idle = document.createElement('div');
+    idle.className = 'dispatcher-meeting-idle';
+    idle.textContent = '未在开会。判定「影响在办任务」时会自动开，也可以现在召集：';
+    meetCard.appendChild(idle);
+    const row = document.createElement('div');
+    row.className = 'dispatcher-meet-row';
+    const input = document.createElement('input');
+    input.className = 'dispatcher-topic-input';
+    input.placeholder = '议题，如：登录页改版分工';
+    input.maxLength = 60;
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && input.value.trim()) sendDispatcherCommand('调度台 开会 ' + input.value.trim());
+    });
+    const go = document.createElement('button');
+    go.className = 'btn btn-primary dispatcher-cmd';
+    go.type = 'button';
+    go.textContent = '开会';
+    go.addEventListener('click', () => {
+      if (input.value.trim()) sendDispatcherCommand('调度台 开会 ' + input.value.trim());
+    });
+    row.append(input, go);
+    meetCard.appendChild(row);
+  }
+  meet.appendChild(meetCard);
+  body.appendChild(meet);
+
+  // 任务台账
+  const ledger = document.createElement('section');
+  ledger.className = 'dispatcher-section';
+  const ledgerHead = document.createElement('h3');
+  ledgerHead.className = 'dispatcher-title';
+  const tasks = data.ledger?.tasks || [];
+  const active = tasks.filter((t) => t.status === 'active');
+  const paused = tasks.filter((t) => t.status === 'paused');
+  ledgerHead.textContent = `任务台账（在办 ${active.length} · 暂停 ${paused.length}）`;
+  ledger.appendChild(ledgerHead);
+  if (!tasks.length) {
+    const empty = document.createElement('p');
+    empty.className = 'dispatcher-empty';
+    empty.textContent = '还没有记录。私聊派活或群里点名某位成员，会自动记入。';
+    ledger.appendChild(empty);
+  }
+  const taskRow = (t) => {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'dispatcher-task';
+    const agent = document.createElement('span');
+    agent.className = 'dispatcher-task-agent';
+    agent.textContent = t.agent;
+    const title = document.createElement('span');
+    title.className = 'dispatcher-task-title';
+    title.textContent = t.title;
+    title.title = `记录于 ${t.createdAt || ''}`;
+    rowEl.append(agent, title);
+    if (t.status === 'paused') {
+      const tag = document.createElement('span');
+      tag.className = 'dispatcher-task-paused';
+      tag.textContent = '已暂停';
+      rowEl.appendChild(tag);
+    }
+    return rowEl;
+  };
+  for (const t of active) ledger.appendChild(taskRow(t));
+  for (const t of paused) ledger.appendChild(taskRow(t));
+  if (paused.length) {
+    const resume = document.createElement('button');
+    resume.className = 'btn btn-ghost dispatcher-cmd';
+    resume.type = 'button';
+    resume.textContent = '恢复全部暂停任务';
+    resume.addEventListener('click', () => sendDispatcherCommand('调度台 恢复 全部'));
+    ledger.appendChild(resume);
+  }
+  body.appendChild(ledger);
+
+  // 最近判定
+  const vd = document.createElement('section');
+  vd.className = 'dispatcher-section';
+  const vdHead = document.createElement('h3');
+  vdHead.className = 'dispatcher-title';
+  vdHead.textContent = '最近判定';
+  vd.appendChild(vdHead);
+  if (!data.verdicts.length) {
+    const empty = document.createElement('p');
+    empty.className = 'dispatcher-empty';
+    empty.textContent = '还没有判定记录。成员间出现讨论时会自动判定。';
+    vd.appendChild(empty);
+  }
+  for (const v of data.verdicts) {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'dispatcher-verdict';
+    const head = document.createElement('div');
+    head.className = 'dispatcher-verdict-head';
+    const badge = document.createElement('span');
+    badge.className = 'dispatcher-verdict-badge' + (v.affected === true ? ' yes' : v.affected === false ? ' no' : ' na');
+    badge.textContent = v.affected === true ? '影响' : v.affected === false ? '不影响' : '未出结果';
+    const time = document.createElement('span');
+    time.className = 'dispatcher-verdict-time';
+    time.textContent = String(v.at || '').slice(5, 16).replace('T', ' ');
+    const count = document.createElement('span');
+    count.className = 'dispatcher-verdict-time';
+    count.textContent = `${v.discussionCount || 0} 条讨论`;
+    head.append(badge, time, count);
+    const reason = document.createElement('div');
+    reason.className = 'dispatcher-verdict-reason';
+    reason.textContent = v.reason || '（判定大脑无响应，详见讨论档案）';
+    rowEl.append(head, reason);
+    vd.appendChild(rowEl);
+  }
+  body.appendChild(vd);
+}
+
+async function sendDispatcherCommand(text) {
+  try {
+    await api(`/groups/${state.currentGroupId}/messages`, { method: 'POST', body: { text } });
+    toast('已发送：' + text, 'success');
+    setTimeout(renderDispatcher, 1200);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+function toggleDispatcher(show) {
+  const panel = $('dispatcher-panel');
+  const shouldShow = show === undefined ? panel.hidden : show;
+  panel.hidden = !shouldShow;
+  document.querySelector('.layout')?.classList.toggle('with-members', shouldShow);
+  $('btn-dispatcher').setAttribute('aria-expanded', String(shouldShow));
+  if (shouldShow) {
+    // 调度台与成员面板共用右侧栏位，互斥避免叠层
+    $('members-panel').hidden = true;
+    $('btn-toggle-members').setAttribute('aria-expanded', 'false');
+    renderDispatcher();
+    clearInterval(dispatcherTimer);
+    dispatcherTimer = setInterval(renderDispatcher, 15000);
+  } else {
+    clearInterval(dispatcherTimer);
+  }
+}
+$('btn-dispatcher').addEventListener('click', () => toggleDispatcher());
+$('btn-close-dispatcher').addEventListener('click', () => toggleDispatcher(false));
 
 function toggleMembers(show) {
   const panel = $('members-panel');

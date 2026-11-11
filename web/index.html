@@ -66,7 +66,8 @@
         <span class="conn-dot" aria-hidden="true"></span><span class="conn-text">连接中</span>
       </span>
       <button class="btn btn-ghost icon-btn" id="btn-toggle-members" aria-label="显示成员列表" aria-expanded="false" title="成员"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
-      <button class="btn btn-ghost icon-btn" id="btn-notify" aria-pressed="false" title="桌面通知（@我/私聊/调度台报警时弹窗）">🔔</button>
+      <button class="btn btn-ghost icon-btn" id="btn-dispatcher" aria-label="调度台" aria-expanded="false" title="调度台（会议 / 任务台账 / 判定）"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg></button>
+      <button class="btn btn-ghost icon-btn" id="btn-notify" aria-pressed="false" title="桌面通知（@我/私聊/调度台报警时弹窗）"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>
       <button class="btn btn-ghost" id="btn-logout" title="退出登录">退出</button>
     </div>
   </header>
@@ -122,16 +123,25 @@
       <div class="members-actions" id="members-actions"></div>
       <ul class="member-list" id="member-list" role="list"></ul>
     </aside>
+
+    <!-- 调度台面板 -->
+    <aside class="members dispatcher" id="dispatcher-panel" aria-label="调度台" hidden>
+      <div class="members-head">
+        <span>调度台</span>
+        <button class="btn btn-ghost icon-btn" id="btn-close-dispatcher" aria-label="关闭调度台">×</button>
+      </div>
+      <div class="dispatcher-body" id="dispatcher-body"></div>
+    </aside>
   </div>
 </div>
 
 <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 
-<script type="module" src="/app.js?v=23"></script>
+<script type="module" src="/app.js?v=24"></script>
 <script src="/boot.js?v=18"></script>
 <script src="/nebula.js?v=18" defer></script>
 <script src="/scifi-fx.js?v=18" defer></script>
-<script src="/scifi-deco.js?v=18" defer></script>
+<script src="/scifi-deco.js?v=19" defer></script>
 <script src="/scifi-wow.js?v=18" defer></script>
 <script src="/palette.js?v=18" defer></script>
 </body>

@@ -32,12 +32,13 @@
   function tick(el) {
     var t = new Date();
     var up = Math.floor(performance.now() / 1000);
-    var mm = Math.floor(up / 60), ss = up % 60;
+    var hh = Math.floor(up / 3600), mm = Math.floor((up % 3600) / 60);
     var link = 12 + ((t.getSeconds() * 7) % 23);
+    // 左栏宽度有限：SYS+LINK 一行足够，UPTIME/NODES 收进 title 悬停可见
     el.textContent =
       'SYS ' + pad(t.getHours()) + ':' + pad(t.getMinutes()) + ':' + pad(t.getSeconds()) +
-      '  ·  LINK ' + link + 'ms  ·  UPTIME ' + pad(mm) + ':' + pad(ss) +
-      '  ·  NODES 7/7  ·  ' + (link < 30 ? 'LINK STABLE' : 'LINK FLUCTUATING');
+      '  ·  LINK ' + link + 'ms  ·  ' + (link < 30 ? 'STABLE' : 'FLUCTUATING');
+    el.title = 'UPTIME ' + pad(hh) + ':' + pad(mm) + '  ·  NODES 7/7  ·  SECURE CHANNEL // NODE 07';
   }
 
   function start() {

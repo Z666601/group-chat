@@ -333,6 +333,17 @@ export function createRouter({ log, metrics, hub, config, adminToken }) {
     return json(res, 200, { ok: true, group: groupView(updated) });
   });
 
+  // 已读上报的 HTTP 兜底：ws 断线时客户端仍能把 last_read_seq 推进来（游标只前进不后退）
+  add('POST', '/api/groups/:id/read', ({ res, user, params, body }) => {
+    const g = store.groups.byId(params.id);
+    if (!g) return fail(res, 404, 'group_not_found', '群组不存在');
+    if (!store.members.isActive(g.id, user.id)) return fail(res, 403, 'not_a_member', '你不是该群成员');
+    const seq = Number(body?.seq) || 0;
+    if (seq <= 0) return fail(res, 400, 'invalid_input', 'seq 需为正整数');
+    store.members.setLastRead(g.id, user.id, seq);
+    return json(res, 200, { ok: true });
+  });
+
   add('POST', '/api/groups/:id/invite', ({ res, user, params }) => {
     const g = store.groups.byId(params.id);
     if (!g) return fail(res, 404, 'group_not_found', '群组不存在');
@@ -926,6 +937,41 @@ export function createRouter({ log, metrics, hub, config, adminToken }) {
         agentKey,
         limit: Math.min(200, Number(url.searchParams.get('limit')) || 50),
       }),
+    });
+  });
+
+  // ── 调度台面板数据（只读 monitor 的落盘状态：台账/会议/最近判定）──
+  add('GET', '/api/groups/:id/dispatcher', ({ res, user, params }) => {
+    const g = store.groups.byId(params.id);
+    if (!g) return fail(res, 404, 'group_not_found', '群组不存在');
+    if (!store.members.isActive(g.id, user.id)) {
+      return fail(res, 403, 'not_a_member', '你不是该群成员');
+    }
+    const readJson = (f) => {
+      try { return JSON.parse(fs.readFileSync(path.join(config.dataDir, f), 'utf8')); } catch { return null; }
+    };
+    const ledger = readJson('task-ledger.json') || { tasks: [] };
+    const meeting = readJson('meeting-mode.json') || { active: false };
+    let verdicts = [];
+    try {
+      verdicts = fs.readdirSync(path.join(config.dataDir, 'discussions'))
+        .filter((f) => f.endsWith('.verdict.json'))
+        .sort()
+        .slice(-5)
+        .reverse()
+        .map((f) => {
+          try {
+            const v = JSON.parse(fs.readFileSync(path.join(config.dataDir, 'discussions', f), 'utf8'));
+            return { at: v.at, discussionCount: v.discussionCount, affected: v.verdict?.affected ?? null, reason: v.verdict?.reason || '', impacts: v.verdict?.impacts || [] };
+          } catch { return null; }
+        })
+        .filter(Boolean);
+    } catch { /* discussions 目录不存在=还没判定过 */ }
+    return json(res, 200, {
+      ok: true,
+      ledger: { tasks: ledger.tasks || [] },
+      meeting,
+      verdicts,
     });
   });
 
