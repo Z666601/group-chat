@@ -106,7 +106,8 @@ async function closeMeeting(reason) {
   await postMeetingConclusion(m);
 }
 
-// 会议小结：一次性判定大脑收拢结论与分工建议（只贴群+落档，不自动写台账）
+// 会议小结：一次性判定大脑收拢结论与分工建议（只贴群+落档，不自动写台账）。
+// 兜底链：全通道 → 短上下文重试一次 → 仍失败贴零模型截取摘要，不许只留一句「生成失败」。
 async function postMeetingConclusion(m) {
   try {
     const data = await fetchMessages(mainGroupId);
@@ -114,16 +115,21 @@ async function postMeetingConclusion(m) {
     const lines = (data.messages || [])
       .filter((x) => Date.parse(x.createdAt) >= since && x.senderId !== state.monitorUserId)
       .map((x) => `${x.senderName || '某人'}：${x.body}`);
-    if (!lines.length) return;
-    const out = await runVerdict({
-      transcript: lines.join('\n'),
-      ledger: readLedger(),
-      mode: 'conclusion',
-    });
+    const ledger = readLedger();
+    let out = null;
+    if (lines.length) {
+      out = await runVerdict({ transcript: lines.join('\n'), ledger, mode: 'conclusion' });
+      if (!out && lines.length > 12) {
+        out = await runVerdict({ transcript: lines.slice(-12).join('\n'), ledger, mode: 'conclusion' });
+      }
+    }
     const at = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     fs.writeFileSync(path.join(DISC_DIR, `meeting-${at}.conclusion.json`), JSON.stringify({ meeting: m, conclusion: out }, null, 2));
     if (!out) {
-      await postAlert(`${ALERT_PREFIX}会议小结生成失败（判定大脑无响应），讨论原文请翻群记录。`);
+      // 零模型摘要：直接截取成员发言，保证群里永远有可读的小结
+      const digest = (lines.length ? lines : ['（会议期间无成员发言）']).slice(-8)
+        .map((l) => '· ' + l.replace(/\s+/g, ' ').slice(0, 60)).join('\n');
+      await postAlert(`${ALERT_PREFIX}会议小结（判定大脑无响应，贴零模型摘要）：\n${digest}`);
       return;
     }
     const assigns = (out.assignments || []).map((a) => `· [${a.agent}] ${a.task}`).join('\n');
@@ -570,7 +576,7 @@ async function tick() {
     while (agentMsgs.length && now - agentMsgs[0].at > 3600000) agentMsgs.shift();
 
     // 会议记账：会议开始之后的成员消息才算一轮（触发判定的那批不算）；
-    // 轮次用完/超时自动散会
+    // 上限判定与自增同处：单批灌入超限立即 break 散会，usedRounds 严格 ≤ maxRounds
     const meeting = readMeeting();
     if (meeting.active) {
       if (now > Date.parse(meeting.endTime)) {
@@ -579,14 +585,15 @@ async function tick() {
         const startedMs = Date.parse(meeting.startedAt);
         let changed = false;
         for (const m of freshMain) {
+          if (meeting.usedRounds >= meeting.maxRounds) break;
           if (m.senderKind === 'agent' && !isSelf(m) && !isNoise(m) && Date.parse(m.createdAt) >= startedMs) {
             meeting.usedRounds += 1;
             changed = true;
             log(`会议轮次 +1（第 ${meeting.usedRounds}/${meeting.maxRounds} 轮）：${m.senderUsername || '?'}：${String(m.body || '').slice(0, 30)}`);
           }
         }
-        if (meeting.usedRounds >= meeting.maxRounds) {
-          if (changed) writeMeeting(meeting);
+        if (changed && meeting.usedRounds >= meeting.maxRounds) {
+          writeMeeting(meeting);
           await closeMeeting('budget');
         } else if (changed) {
           writeMeeting(meeting);

@@ -762,9 +762,9 @@ try {
     const statePath = path.join(dir, 'monitor-state.json');
     const discDir = path.join(dir, 'discussions');
     const ledgerPath = path.join(dir, 'task-ledger.json');
-    // 判定桩：把环境变量里的固定 JSON 原样吐回（stdin 吃掉输入保证管道正常关闭）
+    // 判定桩：conclusion 模式可注 FAKE_CONCLUSION_RAW（散文=真失败路径）；stdin 吃掉输入保证管道正常关闭
     const stub = path.join(dir, 'stub-verdict.mjs');
-    fs.writeFileSync(stub, "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(process.env.FAKE_VERDICT||''));\n");
+    fs.writeFileSync(stub, "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{let mode='';try{mode=(JSON.parse(s)||{}).mode||''}catch{};const out=(mode==='conclusion'&&process.env.FAKE_CONCLUSION_RAW!=null)?process.env.FAKE_CONCLUSION_RAW:(process.env.FAKE_VERDICT_RAW!=null?process.env.FAKE_VERDICT_RAW:(process.env.FAKE_VERDICT||''));process.stdout.write(out);});\n");
     const mkAgent = (key, name, avatar) => ({
       key, name, avatar, trigger: 'mention', replyToAgents: false, supportsModel: false, brain: { type: 'local' },
     });
@@ -790,6 +790,8 @@ try {
         affected: true, reason: '自检固定判定', impacts: [{ agent: 'probea', task: '自检假任务', why: '固定样本' }],
         summary: '自检小结', assignments: [{ agent: 'probea', task: '自检分工' }],
       }),
+      // conclusion 模式注散文：小结走「真失败路径」，钉住兜底链（重试→零模型摘要）
+      FAKE_CONCLUSION_RAW: '这场会议成员们围绕议题各自表态，未形成一致结论。',
     };
     const drainM = (c) => {
       let out = '';
@@ -892,7 +894,8 @@ try {
     const namesLeaked = ['探针甲', '探针乙', 'probea', 'probeb'].filter((n) => (alertMsg?.body || '').includes(n));
     check('报警文案不带成员名（防触发桥接器接话）', !!alertMsg && namesLeaked.length === 0, namesLeaked.join(','));
 
-    // ③b 会议模式：判定影响 → 自动开会；口令直达；超时自动散会并贴小结
+    // ③b 会议模式：判定影响 → 自动开会；单批灌入超上限立即散会（轮次严格封顶）；
+    // 小结走真失败路径（conclusion 桩=散文）断言兜底链贴零模型摘要；主人开会/散会口令直达
     const meetingPath = path.join(dir, 'meeting-mode.json');
     let meeting = null;
     for (let i = 0; i < 30; i++) {
@@ -905,8 +908,58 @@ try {
       !!meeting?.active && /深蓝/.test(meeting.topic) && meeting.startedBy === 'auto',
       JSON.stringify(meeting ? { topic: meeting.topic, by: meeting.startedBy } : {}),
     );
-    // 会议内成员发言（计入轮次，也给小结留素材）
-    await wsA.sendNow(toks.groupId, '会议中我先认领：深蓝方案我继续推进');
+    // 单批灌入 5 条（maxRounds=3）：上限判定与自增同处，usedRounds 严格 ≤ 3
+    for (const [who, text] of [[wsA, '会议发言一：深蓝方案我推进'], [wsB, '会议发言二：对比度我核'], [wsA, '会议发言三：无障碍我过'], [wsB, '会议发言四：明度我压'], [wsA, '会议发言五：收尾']]) {
+      await who.sendNow(toks.groupId, text);
+    }
+    let closed = null;
+    for (let i = 0; i < 40; i++) {
+      try { closed = JSON.parse(fs.readFileSync(meetingPath, 'utf8')); } catch {}
+      if (closed && !closed.active) break;
+      await new Promise((r2) => setTimeout(r2, 250));
+    }
+    check(
+      '单批超限立即散会（usedRounds 严格封顶）',
+      !!closed && !closed.active && closed.closeReason === 'budget' && closed.usedRounds <= 3 && closed.usedRounds >= 1,
+      JSON.stringify(closed ? { reason: closed.closeReason, rounds: closed.usedRounds, max: closed.maxRounds } : {}),
+    );
+    let conclusionMsg = null;
+    for (let i = 0; i < 30; i++) {
+      const r = await api(`/groups/${toks.groupId}/messages?limit=50`, { token: toks.ownerToken });
+      conclusionMsg = (r.data.messages || []).find((m) => m.senderUsername === 'agent.monitor' && String(m.body || '').includes('零模型摘要')) || null;
+      if (conclusionMsg) break;
+      await new Promise((r2) => setTimeout(r2, 250));
+    }
+    check(
+      '小结真失败路径：兜底链贴零模型摘要（桩=散文）',
+      !!conclusionMsg && conclusionMsg.body.includes('会议发言'),
+      (conclusionMsg?.body || '').slice(0, 60),
+    );
+    const conclFiles = (() => { try { return fs.readdirSync(discDir).filter((f) => f.includes('conclusion')); } catch { return []; } })();
+    const conclNull = (() => {
+      try { return JSON.parse(fs.readFileSync(path.join(discDir, conclFiles[conclFiles.length - 1]), 'utf8')).conclusion === null; } catch { return false; }
+    })();
+    check('小结档案如实落盘 conclusion=null（不假装成功）', conclFiles.length >= 1 && conclNull, `conclusion 文件=${conclFiles.length}`);
+
+    // 主人口令开第二场（散言复验）：开会 → 一条发言 → 散会 → 兜底摘要再贴一份
+    await api(`/groups/${toks.groupId}/messages`, { method: 'POST', token: toks.ownerToken, body: { text: '调度台 开会 散言复验议题' } });
+    let meeting2 = null;
+    for (let i = 0; i < 30; i++) {
+      try { meeting2 = JSON.parse(fs.readFileSync(meetingPath, 'utf8')); } catch {}
+      if (meeting2?.active && /散言复验/.test(meeting2.topic || '')) break;
+      await new Promise((r2) => setTimeout(r2, 250));
+    }
+    check('主人「调度台 开会」口令直达', !!meeting2?.active && /散言复验/.test(meeting2.topic || '') && meeting2.startedBy === 'owner', JSON.stringify(meeting2 ? { topic: meeting2.topic, by: meeting2.startedBy } : {}));
+    await wsA.sendNow(toks.groupId, '散言会我表个态：方案可行');
+    await api(`/groups/${toks.groupId}/messages`, { method: 'POST', token: toks.ownerToken, body: { text: '调度台 散会' } });
+    let closed2 = null;
+    for (let i = 0; i < 40; i++) {
+      try { closed2 = JSON.parse(fs.readFileSync(meetingPath, 'utf8')); } catch {}
+      if (closed2 && !closed2.active) break;
+      await new Promise((r2) => setTimeout(r2, 250));
+    }
+    check('主人「调度台 散会」口令直达', !!closed2 && !closed2.active && closed2.closeReason === 'owner', JSON.stringify(closed2 ? { reason: closed2.closeReason, rounds: closed2.usedRounds } : {}));
+
     await api(`/groups/${toks.groupId}/messages`, { method: 'POST', token: toks.ownerToken, body: { text: '调度台 台账' } });
     let ledgerReply = null;
     for (let i = 0; i < 30; i++) {
@@ -916,25 +969,6 @@ try {
       await new Promise((r2) => setTimeout(r2, 250));
     }
     check('「调度台 台账」口令直达（零模型回台账摘要；任务可能已被自动暂停，只验通道与格式）', !!ledgerReply, (ledgerReply?.body || '').slice(0, 40));
-    let closed = null;
-    for (let i = 0; i < 40; i++) {
-      try { closed = JSON.parse(fs.readFileSync(meetingPath, 'utf8')); } catch {}
-      if (closed && !closed.active) break;
-      await new Promise((r2) => setTimeout(r2, 250));
-    }
-    check(
-      '会议超时自动散会',
-      !!closed && !closed.active && closed.closeReason === 'timeout',
-      JSON.stringify(closed ? { reason: closed.closeReason, rounds: closed.usedRounds } : {}),
-    );
-    let conclusionMsg = null;
-    for (let i = 0; i < 30; i++) {
-      const r = await api(`/groups/${toks.groupId}/messages?limit=50`, { token: toks.ownerToken });
-      conclusionMsg = (r.data.messages || []).find((m) => m.senderUsername === 'agent.monitor' && String(m.body || '').includes('会议小结')) || null;
-      if (conclusionMsg) break;
-      await new Promise((r2) => setTimeout(r2, 250));
-    }
-    check('散会后调度台贴会议小结', !!conclusionMsg && /自检小结/.test(conclusionMsg.body), (conclusionMsg?.body || '').slice(0, 60));
 
     // ③c 行动通道：判定 impacts → 台账任务自动转 paused；「调度台 恢复 全部」回 active
     let pausedTask = null;

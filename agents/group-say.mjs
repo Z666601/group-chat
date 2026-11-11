@@ -17,7 +17,11 @@ if (!key || !text) {
   process.exit(1);
 }
 const tokensFile = JSON.parse(fs.readFileSync(process.env.GC_TOKENS_FILE || path.join(ROOT, 'agents', '.tokens.local.json'), 'utf8'));
-const token = tokensFile.tokens[key];
+// monitor（调度台）的令牌不在 tokens 表，在 monitor 自己的落盘状态里
+let token = tokensFile.tokens?.[key];
+if (key === 'monitor') {
+  try { token = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'monitor-state.json'), 'utf8')).monitorToken; } catch {}
+}
 let groupId = group || tokensFile.groupId;
 if (group && group.startsWith('dm.')) groupId = tokensFile.dm[group.slice(3)]?.groupId;
 if (!token || !groupId) { console.error('令牌或群不存在'); process.exit(1); }
