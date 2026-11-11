@@ -74,13 +74,29 @@ for (const e of prevEntries()) {
   liveByKey.set(e.key, e.pid);
 }
 
+// ── 调度监视器（多脑闭环常驻钩子）：跟桥一起守护；GC_MONITOR_OFF=1 跳过（自检隔离）──
+const MONITOR_KEY = '__monitor__';
+const monitorOff = process.env.GC_MONITOR_OFF === '1';
+// 监视器没有群内在线状态，只按 pid 探活，不做 online 校验
+function liveMonitorPid() {
+  for (const e of prevEntries()) {
+    if (e?.key === MONITOR_KEY && alive(e.pid)) return e.pid;
+  }
+  return null;
+}
+const monitorPrevPid = monitorOff ? null : liveMonitorPid();
+const monitorToStart = monitorOff ? false : monitorPrevPid == null;
+if (monitorPrevPid != null) liveByKey.delete(MONITOR_KEY);
+
 const toStart = chosen.filter((a) => !liveByKey.has(a.key));
 const skipped = chosen.filter((a) => liveByKey.has(a.key));
 if (skipped.length) {
   console.log(`已在运行，跳过：${skipped.map((a) => `${a.key}(pid ${liveByKey.get(a.key)})`).join('、')}`);
 }
+if (monitorPrevPid != null) console.log(`调度监视器已在运行（pid ${monitorPrevPid}），跳过`);
 // 沿用的存活条目：含 --only 没选中但仍在跑的 key，绝不写空表（写空等于把活口记录丢了，下轮必重复起）
 const carried = [...liveByKey].map(([key, pid]) => ({ key, pid }));
+if (monitorPrevPid != null) carried.push({ key: MONITOR_KEY, pid: monitorPrevPid });
 
 function writePids(pids) {
   fs.mkdirSync(path.dirname(PIDS_PATH), { recursive: true });
@@ -90,7 +106,7 @@ function writePids(pids) {
   );
 }
 
-if (!toStart.length) {
+if (!toStart.length && !monitorToStart) {
   writePids(carried);
   console.log('桥接器都已在运行，本次不重复启动。');
   process.exit(0);
@@ -110,8 +126,24 @@ for (const a of toStart) {
   children.push(child);
 }
 
+if (monitorToStart) {
+  console.log('启动调度监视器（监听钩子，零模型消耗）');
+  const monitorChild = spawn(process.execPath, ['--no-warnings', 'agents/discussion-monitor.mjs'], {
+    cwd: ROOT,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  monitorChild.stdout.on('data', (d) => process.stdout.write(`[monitor] ${d}`));
+  monitorChild.stderr.on('data', (d) => process.stderr.write(`[monitor] ${d}`));
+  children.push(monitorChild);
+}
+
 // 合并写回：沿用的存活条目 + 本次新起的，不丢活口
-writePids([...carried, ...children.map((c, i) => ({ key: toStart[i].key, pid: c.pid }))]);
+// 监视器条目排在桥接器之后，key 取 MONITOR_KEY
+writePids([
+  ...carried,
+  ...children.map((c, i) => ({ key: toStart[i]?.key ?? MONITOR_KEY, pid: c.pid })),
+]);
 
 const shutdown = () => {
   for (const c of children) {

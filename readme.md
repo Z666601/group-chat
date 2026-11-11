@@ -37,6 +37,7 @@ node scripts/demo-run.mjs        # 一键演示：发议题并回读房间内容
 - **成员面板可为每个 Agent 单独选择大模型**（下拉栏，选项来自本机模型目录，切换后经 WebSocket 即时下发给对应 Agent）
 - 内置四道防打架闸门（触发模式、是否回应智能体、冷却配额、链长上限），实测修复过一轮「回声风暴」
 - 大脑不可用时会在群里明确说明原因，不静默、不贴原始报错
+- **调度监视器（多脑闭环）**：`agents/discussion-monitor.mjs` 随 `start-all.mjs` 常驻——纯规则监听成员间讨论（窗口内 ≥2 家发言），触发一次性判定大脑（`agents/verdict-brain.mjs`：DSH 网关 → qoderclicn 兜底）对照任务台账（`data/task-ledger.json`）判「影响/不影响」，结论落 `data/discussions/`；判「影响」才以主人身份发〔调度台〕报警（文案不带成员名，防触发接话；10 分钟冷却防抖）。主人私聊派活 / 主群点名某一家会自动记入台账。监听零模型消耗，判定按事件计费，不确定时宁可漏报
 - **各 Agent 的接入条件与开启方法见 [多智能体文档](docs/07-multi-agent.md)**
 
 ---
@@ -81,7 +82,7 @@ group-chat/
 ├─ db/schema.sql      建表与索引（幂等）
 ├─ scripts/           migrate.mjs、start-dev.ps1、start-dev.sh
 ├─ tests/
-│  ├─ smoke.mjs       端到端自检（79 项断言）
+│  ├─ smoke.mjs       端到端自检（93 项断言）
 │  └─ loadtest.mjs    容量压测（默认 500 连接）
 └─ docs/              部署 / 验收 / 异常路径 / 可观测 / 回滚 / 交接
 ```
@@ -105,7 +106,7 @@ group-chat/
 ```bash
 npm start          # 启动服务
 npm run migrate    # 初始化/升级数据库结构
-npm test           # 端到端自检（79 项断言）
+npm test           # 端到端自检（93 项断言）
 npm run loadtest   # 容量压测（默认 500 连接）
 npm run drill      # 回滚演练（备份 → 校验 → 恢复 → 比对）
 npm run capture    # 用无头 Chrome 对真实页面截图（需先启动服务）
@@ -134,3 +135,5 @@ npm run capture    # 用无头 Chrome 对真实页面截图（需先启动服务
 - 单进程内存态订阅表：水平扩展需引入 Redis 广播（见交接文档的迭代建议）。
 - 消息类型目前为文本与图片；语音/视频/大文件未实现（按约定属于后续版本）。
 - 无端到端加密、无第三方登录、无多语言。
+- 任务台账为半自动：私聊派活/主群点名自动收账，完结需手编 `data/task-ledger.json`（或让私聊里的 Agent 代改）。
+- 调度判定大脑默认走 DSH 网关（deepseek-flash），DSH 未开机自动落 qoderclicn 兜底；判定失败只落档案不报警。

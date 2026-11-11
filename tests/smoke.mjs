@@ -43,9 +43,10 @@ async function api(p, { method = 'GET', body, token, raw, headers = {} } = {}) {
   return { status: res.status, data, headers: res.headers };
 }
 
-function openWs(token) {
+function openWs(token, { agent = false } = {}) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=${encodeURIComponent(token)}`);
+    const kind = agent ? 'agentToken' : 'token';
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws?${kind}=${encodeURIComponent(token)}`);
     const buffer = [];
     ws.addEventListener('message', (ev) => {
       try {
@@ -478,6 +479,8 @@ try {
       GC_AGENTS_CONFIG: cfgPath,
       GC_TOKENS_FILE: tokPath,
       GC_BRIDGE_PIDS: pidPath,
+      // PID 表断言按 3 条桥写死：监视器进程的闭环在 10f 单独验，这里整段关掉
+      GC_MONITOR_OFF: '1',
       LOG_LEVEL: 'silent',
     };
     const drain = (c) => {
@@ -731,6 +734,157 @@ try {
       try { process.kill(p.pid); } catch {}
     }
     try { sa1.kill(); } catch {}
+  }
+
+  console.log('\n── 10f. 多脑调度闭环（监听钩子→判定→台账→报警）──────');
+  // 主人拍板的 phase-1 最小闭环：常驻监听钩子纯规则发现成员讨论 → 一次性判定任务对照
+  // 任务台账 → 结论落盘；判定「影响」时主群收到〔调度台〕报警。判定用桩（零外部依赖），
+  // 真实模型链路由真机验证覆盖。全程 GC_* 缝隙隔离，绝不碰真实台账与真实群。
+  {
+    const dir = path.join(DATA_DIR, 'monitor-probe');
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+    const cfgPath = path.join(dir, 'agents.config.json');
+    const tokPath = path.join(dir, 'tokens.local.json');
+    const statePath = path.join(dir, 'monitor-state.json');
+    const discDir = path.join(dir, 'discussions');
+    const ledgerPath = path.join(dir, 'task-ledger.json');
+    // 判定桩：把环境变量里的固定 JSON 原样吐回（stdin 吃掉输入保证管道正常关闭）
+    const stub = path.join(dir, 'stub-verdict.mjs');
+    fs.writeFileSync(stub, "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(process.env.FAKE_VERDICT||''));\n");
+    const mkAgent = (key, name, avatar) => ({
+      key, name, avatar, trigger: 'mention', replyToAgents: false, supportsModel: false, brain: { type: 'local' },
+    });
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      server: BASE,
+      monitor: { pollMs: 250, windowMs: 4000, cooldownMs: 10000 },
+      agents: [mkAgent('probea', '探针甲', '🅰️'), mkAgent('probeb', '探针乙', '🅱️')],
+    }, null, 2));
+    const PENV_M = {
+      ...process.env,
+      SERVER: BASE,
+      ADMIN_TOKEN,
+      ADMIN_TOKEN_FILE: path.join(dir, 'no-such-admin.token'),
+      GC_AGENTS_CONFIG: cfgPath,
+      GC_TOKENS_FILE: tokPath,
+      GC_MONITOR_STATE: statePath,
+      GC_DISCUSSION_DIR: discDir,
+      GC_LEDGER_PATH: ledgerPath,
+      GC_VERDICT_SCRIPT: stub,
+      GC_POLL_MS: '250',
+      FAKE_VERDICT: JSON.stringify({ affected: true, reason: '自检固定判定', impacts: [{ agent: 'probea', task: '自检假任务', why: '固定样本' }] }),
+    };
+    const drainM = (c) => {
+      let out = '';
+      c.stdout.on('data', (d) => (out += String(d)));
+      c.stderr.on('data', (d) => (out += String(d)));
+      return () => out;
+    };
+    const prov = await new Promise((resolve) => {
+      const c = spawn(process.execPath, ['--no-warnings', 'agents/provision.mjs',
+        '--group=自检监视器群', '--owner=monitor_owner', '--password=monitor_pass_123'], {
+        cwd: ROOT, env: PENV_M, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      spawnedPids.push(c.pid);
+      const getOut = drainM(c);
+      const timer = setTimeout(() => { try { c.kill(); } catch {} resolve({ code: null, out: getOut() }); }, 20000);
+      c.on('close', (code) => { clearTimeout(timer); resolve({ code, out: getOut() }); });
+    });
+    check('监视器探针群发放令牌成功', prov.code === 0, `code=${prov.code} ${prov.out.slice(-80).replace(/\s+/g, ' ')}`);
+    const toks = JSON.parse(fs.readFileSync(tokPath, 'utf8'));
+
+    const monitor = spawn(process.execPath, ['--no-warnings', 'agents/discussion-monitor.mjs'], {
+      cwd: ROOT, env: PENV_M, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    });
+    spawnedPids.push(monitor.pid);
+    const monOut = drainM(monitor);
+    await new Promise((r) => setTimeout(r, 1200)); // 首轮基线建好（不重扫历史）
+
+    // ⓪ 负向：桥接器故障话术不算讨论（今晚砚舟连发 5 条"没接上话"就白触发过一场判定）
+    const wsA = await openWs(toks.tokens.probea, { agent: true });
+    const wsB = await openWs(toks.tokens.probeb, { agent: true });
+    await wsA.sendNow(toks.groupId, '无法应答：探针大脑暂不可用（自检故障话术）');
+    await wsB.sendNow(toks.groupId, '无法应答：另一台也挂了（自检故障话术）');
+    await new Promise((r) => setTimeout(r, 2500));
+    const noiseTriggered = (() => { try { return fs.readdirSync(discDir).filter((f) => f.endsWith('.verdict.json')).length; } catch { return 0; } })();
+    check('故障话术连发不触发判定（噪音过滤）', noiseTriggered === 0, `verdict 文件数=${noiseTriggered}`);
+
+    // ① 私聊派活 → 台账自动收账（寒暄不收账，含派活动词才收）
+    const dmChit = await api(`/groups/${toks.dm.probea.groupId}/messages`, {
+      method: 'POST', token: toks.ownerToken, body: { text: '今晚早点休息，别熬着' },
+    });
+    check('主人私聊寒暄发送成功', dmChit.status === 201 || dmChit.status === 200, `status=${dmChit.status}`);
+    await new Promise((r) => setTimeout(r, 1500));
+    let ledgerTasks = [];
+    try { ledgerTasks = (JSON.parse(fs.readFileSync(ledgerPath, 'utf8')).tasks) || []; } catch {}
+    check('私聊寒暄不记任务（动词过滤）', ledgerTasks.length === 0, JSON.stringify(ledgerTasks.map((t) => t.title)));
+    const dmPost = await api(`/groups/${toks.dm.probea.groupId}/messages`, {
+      method: 'POST', token: toks.ownerToken, body: { text: '帮我把首页标题改成深蓝色' },
+    });
+    check('主人私聊派活发送成功', dmPost.status === 201 || dmPost.status === 200, `status=${dmPost.status}`);
+    for (let i = 0; i < 30; i++) {
+      try { ledgerTasks = (JSON.parse(fs.readFileSync(ledgerPath, 'utf8')).tasks) || []; } catch {}
+      if (ledgerTasks.length) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    check(
+      '私聊派活自动记入任务台账（agent/digest 正确）',
+      ledgerTasks.length === 1 && ledgerTasks[0].agent === 'probea' && /首页标题/.test(ledgerTasks[0].digest),
+      JSON.stringify(ledgerTasks.map((t) => `${t.agent}:${t.title}`).slice(0, 2)),
+    );
+
+    // ② 两家成员先后发言 → 触发判定 → 结论落盘（agent 身份只能走 WS，REST 对 agent 令牌是 401）
+    const sentA = await wsA.sendNow(toks.groupId, '我倾向标题用深蓝，和整体色板更搭');
+    const sentB = await wsB.sendNow(toks.groupId, '深蓝底要配白字才够对比度，另外记得过一下无障碍标准');
+    check('探针以 agent 身份经 WS 发言成功', sentA && sentB, `甲=${sentA} 乙=${sentB}`);
+    let verdictFile = null;
+    for (let i = 0; i < 50; i++) {
+      try {
+        const files = fs.readdirSync(discDir).filter((f) => f.endsWith('.verdict.json'));
+        if (files.length) { verdictFile = path.join(discDir, files[0]); break; }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    check('成员讨论触发判定任务并落盘', !!verdictFile, monOut().split('\n').filter(Boolean).slice(-2).join(' | ').slice(0, 120));
+    const verdictData = verdictFile ? JSON.parse(fs.readFileSync(verdictFile, 'utf8')) : null;
+    check(
+      '判定 JSON 解析正确（affected/impacts 来自桩）',
+      verdictData?.verdict?.affected === true && verdictData.verdict.impacts.length === 1 && verdictData.discussionCount >= 2,
+      JSON.stringify(verdictData?.verdict || {}),
+    );
+
+    // ③ 判定「影响」→ 主群收到〔调度台〕报警（文案不带成员名，避免触发桥接器接话）
+    let alertMsg = null;
+    for (let i = 0; i < 30; i++) {
+      const r = await api(`/groups/${toks.groupId}/messages?limit=50`, { token: toks.ownerToken });
+      alertMsg = (r.data.messages || []).find((m) => String(m.body || '').startsWith('〔调度台〕')) || null;
+      if (alertMsg) break;
+      await new Promise((r2) => setTimeout(r2, 250));
+    }
+    check('影响判定后主群收到〔调度台〕报警', !!alertMsg, (alertMsg?.body || '').slice(0, 60));
+    check(
+      '报警来自独立调度台成员，不冒用主人账号',
+      !!alertMsg && alertMsg.senderKind === 'agent' && alertMsg.senderUsername === 'agent.monitor' && alertMsg.senderName === '调度台',
+      `sender=${alertMsg?.senderUsername}/${alertMsg?.senderKind}`,
+    );
+    check(
+      '报警文案自证是系统消息',
+      !!alertMsg && alertMsg.body.includes('系统自动消息'),
+      (alertMsg?.body || '').slice(0, 40),
+    );
+    const namesLeaked = ['探针甲', '探针乙', 'probea', 'probeb'].filter((n) => (alertMsg?.body || '').includes(n));
+    check('报警文案不带成员名（防触发桥接器接话）', !!alertMsg && namesLeaked.length === 0, namesLeaked.join(','));
+
+    // ④ 冷却防抖：冷却期内再起一轮讨论，不重复判定
+    await wsA.sendNow(toks.groupId, '补充一句，深蓝要压到 8% 明度以下');
+    await wsB.sendNow(toks.groupId, '同意，明度我这边再核一遍');
+    await new Promise((r) => setTimeout(r, 3000));
+    const verdictCount = (() => { try { return fs.readdirSync(discDir).filter((f) => f.endsWith('.verdict.json')).length; } catch { return 0; } })();
+    check('冷却窗口内不重复起判定任务', verdictCount === 1, `verdict 文件数=${verdictCount}`);
+
+    wsA.close();
+    wsB.close();
+    try { monitor.kill(); } catch {}
   }
 
   console.log('\n── 11. 后台台账与可观测性 ────────────────────');
