@@ -31,6 +31,17 @@ const POLL_MS = Number(process.env.GC_POLL_MS || mon.pollMs || 2500);
 const WINDOW_MS = Number(process.env.GC_WINDOW_MS || mon.windowMs || 120000);
 const COOLDOWN_MS = Number(process.env.GC_COOLDOWN_MS || mon.cooldownMs || 600000);
 
+// 会议模式：monitor 是 meeting.json 的唯一写方，桥接器只读（1s 缓存）
+const MEETING_PATH = process.env.GC_MEETING_PATH || path.join(ROOT, 'data', 'meeting-mode.json');
+const MEETING_MAX_ROUNDS = Number((mon.meeting || {}).maxRounds || 12);
+const MEETING_TIMEOUT_MS = Number((mon.meeting || {}).timeoutMs || 600000);
+
+// 每日备份：VACUUM INTO 产出单文件快照，留最近 N 份
+const backupCfg = mon.backup || {};
+const BACKUP_KEEP = Number(backupCfg.keep || 7);
+const BACKUP_DIR = process.env.GC_BACKUP_DIR || (backupCfg.dir ? path.join(ROOT, backupCfg.dir) : path.join(ROOT, 'data', 'backup'));
+const DB_PATH = process.env.GC_DB_PATH || path.join(ROOT, 'data', 'chat.db');
+
 const tokensFile = JSON.parse(fs.readFileSync(TOKENS_PATH, 'utf8'));
 const ownerToken = tokensFile.ownerToken;
 const mainGroupId = tokensFile.groupId;
@@ -50,6 +61,180 @@ try { state = { ...state, ...JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')) }; 
 function saveState() {
   fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
   fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+}
+
+// ── 会议模式 ─────────────────────────────────────────
+function readMeeting() {
+  try { return JSON.parse(fs.readFileSync(MEETING_PATH, 'utf8')); } catch { return { active: false }; }
+}
+function writeMeeting(m) {
+  fs.mkdirSync(path.dirname(MEETING_PATH), { recursive: true });
+  fs.writeFileSync(MEETING_PATH, JSON.stringify(m, null, 2));
+}
+
+function startMeeting(topic, source) {
+  if (readMeeting().active) return null;
+  const m = {
+    active: true,
+    topic: String(topic || '未命名议题').replace(/\s+/g, ' ').trim().slice(0, 80),
+    startedBy: source,
+    startedAt: new Date().toISOString(),
+    endTime: new Date(Date.now() + MEETING_TIMEOUT_MS).toISOString(),
+    maxRounds: MEETING_MAX_ROUNDS,
+    usedRounds: 0,
+  };
+  writeMeeting(m);
+  log(`会议开始（${source === 'owner' ? '主人召集' : '判定触发'}）：${m.topic}`);
+  postAlert(
+    `${ALERT_PREFIX}会议开始（${source === 'owner' ? '主人召集' : '判定触发'}）：${m.topic}。` +
+    `各位直接发言讨论（不用等点名），${MEETING_MAX_ROUNDS} 轮或 ${Math.round(MEETING_TIMEOUT_MS / 60000)} 分钟后自动散会；主人说「调度台 散会」可提前结束。`,
+  );
+  return m;
+}
+
+async function closeMeeting(reason) {
+  const m = readMeeting();
+  if (!m.active) return;
+  m.active = false;
+  m.closedAt = new Date().toISOString();
+  m.closeReason = reason;
+  writeMeeting(m);
+  log(`会议结束（${reason}），共 ${m.usedRounds} 轮`);
+  await postAlert(
+    `${ALERT_PREFIX}会议结束（${reason === 'owner' ? '主人散会' : reason === 'budget' ? '轮次用完' : '超时'}），共 ${m.usedRounds} 轮。小结稍后贴出。`,
+  );
+  await postMeetingConclusion(m);
+}
+
+// 会议小结：一次性判定大脑收拢结论与分工建议（只贴群+落档，不自动写台账）
+async function postMeetingConclusion(m) {
+  try {
+    const data = await fetchMessages(mainGroupId);
+    const since = Date.parse(m.startedAt);
+    const lines = (data.messages || [])
+      .filter((x) => Date.parse(x.createdAt) >= since && x.senderId !== state.monitorUserId)
+      .map((x) => `${x.senderName || '某人'}：${x.body}`);
+    if (!lines.length) return;
+    const out = await runVerdict({
+      transcript: lines.join('\n'),
+      ledger: readLedger(),
+      mode: 'conclusion',
+    });
+    const at = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    fs.writeFileSync(path.join(DISC_DIR, `meeting-${at}.conclusion.json`), JSON.stringify({ meeting: m, conclusion: out }, null, 2));
+    if (!out) {
+      await postAlert(`${ALERT_PREFIX}会议小结生成失败（判定大脑无响应），讨论原文请翻群记录。`);
+      return;
+    }
+    const assigns = (out.assignments || []).map((a) => `· [${a.agent}] ${a.task}`).join('\n');
+    await postAlert(
+      `${ALERT_PREFIX}会议小结：${String(out.summary || '').slice(0, 120)}` +
+      (assigns ? `\n分工建议（待主人认领后生效）：\n${assigns}` : ''),
+    );
+  } catch (err) {
+    log('会议小结失败：', String(err?.message || err).slice(0, 120));
+  }
+}
+
+// ── 调度台口令（零模型，主人直达）────────────────────
+function latestVerdictFile() {
+  try {
+    const files = fs.readdirSync(DISC_DIR).filter((f) => f.endsWith('.verdict.json')).sort();
+    return files.length ? path.join(DISC_DIR, files[files.length - 1]) : null;
+  } catch { return null; }
+}
+function verdictCount() {
+  try { return fs.readdirSync(DISC_DIR).filter((f) => f.endsWith('.verdict.json')).length; } catch { return 0; }
+}
+
+function handleOwnerCommand(m) {
+  if (m.senderKind === 'agent') return false;
+  const mm = String(m.body || '').trim().match(/^调度台[，,：:\s]*(开会|散会|台账|最新?判定|状态)\s*[，,：:\s]?(.*)$/);
+  if (!mm) return false;
+  if (state.lastCommandMsgId === m.id) return true; // 幂等：同一条口令只执行一次
+  state.lastCommandMsgId = m.id;
+  saveState();
+  const cmd = mm[1];
+  const arg = (mm[2] || '').trim();
+  log('口令：', cmd, arg ? `(${arg.slice(0, 30)})` : '');
+  (async () => {
+    try {
+      if (cmd === '开会') {
+        if (readMeeting().active) return postAlert(`${ALERT_PREFIX}已经在开会了（议题：${readMeeting().topic}），说「调度台 散会」可结束。`);
+        startMeeting(arg, 'owner');
+      } else if (cmd === '散会') {
+        await closeMeeting('owner');
+      } else if (cmd === '台账') {
+        const tasks = readLedger().tasks.filter((t) => t.status === 'active');
+        await postAlert(`${ALERT_PREFIX}在办任务清单 ${tasks.length} 项：\n${tasks.map((t) => `· [${t.agent}] ${t.title}`).join('\n') || '（空）'}`);
+      } else if (cmd === '判定' || cmd === '最新判定') {
+        const f = latestVerdictFile();
+        if (!f) return postAlert(`${ALERT_PREFIX}还没有判定档案。`);
+        const v = JSON.parse(fs.readFileSync(f, 'utf8'));
+        await postAlert(`${ALERT_PREFIX}最近判定（${v.at}）：${v.verdict ? `affected=${v.verdict.affected}，${String(v.verdict.reason).slice(0, 100)}` : '判定失败未出结果'}；讨论 ${v.discussionCount} 条。`);
+      } else if (cmd === '状态') {
+        const tasks = readLedger().tasks;
+        await postAlert(
+          `${ALERT_PREFIX}状态：盯主群+${dmByGroup.size} 私聊；台账 ${tasks.length} 条（active ${tasks.filter((t) => t.status === 'active').length}）；` +
+          `判定档案 ${verdictCount()} 份；会议${readMeeting().active ? '进行中' : '未召开'}；最近备份：${state.lastBackupDate || '无'}。`,
+        );
+      }
+    } catch (err) {
+      log('口令处理失败：', String(err?.message || err).slice(0, 120));
+    }
+  })();
+  return true;
+}
+
+// ── 每日备份（py + sqlite VACUUM INTO，零依赖）────────
+let backingUp = false;
+async function dailyBackup() {
+  if (!backupCfg.enabled || backingUp || !fs.existsSync(DB_PATH)) return;
+  const today = new Date().toISOString().slice(0, 10);
+  if (state.lastBackupDate === today) return;
+  backingUp = true;
+  const dest = path.join(BACKUP_DIR, `chat-${today.replace(/-/g, '')}.db`);
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const script = [
+      'import sqlite3, sys, json',
+      'src = sqlite3.connect(sys.argv[1])',
+      'src.execute("VACUUM INTO ?", (sys.argv[2],))',
+      'src.close()',
+      'c = sqlite3.connect(sys.argv[2])',
+      'ok = c.execute("PRAGMA integrity_check").fetchone()[0]',
+      'n = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]',
+      'c.close()',
+      'print(json.dumps({"ok": ok, "messages": n}))',
+    ].join('\n');
+    const out = await new Promise((resolve) => {
+      const child = spawn('py', ['-I', '-c', script, DB_PATH, dest], { windowsHide: true });
+      let s = '';
+      let e = '';
+      child.stdout.on('data', (d) => (s += d.toString('utf8')));
+      child.stderr.on('data', (d) => (e += d.toString('utf8')));
+      const t = setTimeout(() => { try { child.kill(); } catch {} resolve(null); }, 120000);
+      child.on('close', () => { clearTimeout(t); resolve(s.trim() || null); });
+      child.on('error', () => { clearTimeout(t); log('备份进程启动失败：', String(e).slice(0, 100)); resolve(null); });
+    });
+    if (!out) throw new Error('py 备份无输出');
+    const r = JSON.parse(out);
+    if (r.ok !== 'ok') throw new Error(`integrity: ${r.ok}`);
+    state.lastBackupDate = today;
+    saveState();
+    // 保留最近 N 份
+    const olds = fs.readdirSync(BACKUP_DIR).filter((f) => /^chat-\d{8}\.db$/.test(f)).sort();
+    for (const f of olds.slice(0, Math.max(0, olds.length - BACKUP_KEEP))) {
+      try { fs.unlinkSync(path.join(BACKUP_DIR, f)); } catch {}
+    }
+    log(`每日备份完成：${path.basename(dest)}（${r.messages} 条消息，integrity ok）`);
+    postAlert(`${ALERT_PREFIX}每日备份完成：${path.basename(dest)}（${r.messages} 条消息，integrity ok，留 ${BACKUP_KEEP} 份）`);
+  } catch (err) {
+    log('每日备份失败：', String(err?.message || err).slice(0, 140));
+    postAlert(`${ALERT_PREFIX}每日备份失败：${String(err?.message || err).slice(0, 100)}。请检查。`);
+  } finally {
+    backingUp = false;
+  }
 }
 
 // ── 调度台身份：admin 绑定独立成员，报警不冒用主人账号 ──
@@ -206,9 +391,11 @@ async function pollNew(gid) {
     state.lastSeqs[gid] = data.latestSeq || 0;
     return [];
   }
-  return (data.messages || [])
+  const fresh = (data.messages || [])
     .filter((m) => Number(m.seq) > last)
     .sort((a, b) => a.seq - b.seq);
+  if (fresh.length) state.lastSeqs[gid] = fresh[fresh.length - 1].seq;
+  return fresh;
 }
 
 // ── 讨论检测（纯规则）：窗口内 ≥2 条 agent 消息且来自 ≥2 家 ──
@@ -229,12 +416,12 @@ function detectDiscussion(now) {
 }
 
 // ── 判定任务：起一次性子进程读讨论 + 台账 ────────────
-async function runVerdict({ transcript, ledger }) {
+async function runVerdict({ transcript, ledger, mode }) {
   const child = spawn(process.execPath, ['--no-warnings', VERDICT_SCRIPT], {
     cwd: ROOT, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
   });
   child.stdin.on('error', () => {}); // 判定脚本提前退出时避免 EPIPE 崩溃
-  child.stdin.write(JSON.stringify({ transcript, ledger }));
+  child.stdin.write(JSON.stringify({ transcript, ledger, mode }));
   child.stdin.end();
   let out = '';
   let err = '';
@@ -259,8 +446,13 @@ async function runVerdict({ transcript, ledger }) {
     const b = s.lastIndexOf('}');
     if (a < 0 || b <= a) throw new Error('no json');
     const verdict = JSON.parse(s.slice(a, b + 1));
-    if (typeof verdict.affected !== 'boolean') throw new Error('bad affected');
-    if (!Array.isArray(verdict.impacts)) verdict.impacts = [];
+    if (mode === 'conclusion') {
+      if (typeof verdict.summary !== 'string') throw new Error('bad summary');
+      if (!Array.isArray(verdict.assignments)) verdict.assignments = [];
+    } else {
+      if (typeof verdict.affected !== 'boolean') throw new Error('bad affected');
+      if (!Array.isArray(verdict.impacts)) verdict.impacts = [];
+    }
     return verdict;
   } catch (e) {
     log('判定输出不可解析：', String(e?.message || e), '原始：', result.slice(0, 120));
@@ -309,7 +501,12 @@ async function triggerDiscussion(discussion, now) {
     `${ALERT_PREFIX}（系统自动消息，非主人发言）监听到成员讨论（${discussion.length} 条），判定影响在办任务 ${verdict.impacts.length} 项。` +
     `理由：${String(verdict.reason || '').slice(0, 80)}。清单与讨论原文：${path.relative(ROOT, `${base}.verdict.json`)}。请主人过目定夺。`,
   );
-  if (!sent) log('报警发送失败（调度台通道不可用），档案已落盘待查');
+  if (!sent) {
+    log('报警发送失败（调度台通道不可用），档案已落盘待查');
+    return;
+  }
+  // 判定「影响」→ 自动开会：让相关成员当场把事情聊出新分工（原方案第 4-5 步）
+  startMeeting(discussion[0]?.body || verdict.reason, 'auto');
 }
 
 // ── 主循环 ───────────────────────────────────────────
@@ -319,6 +516,7 @@ async function tick() {
   if (polling) return;
   polling = true;
   try {
+    await dailyBackup();
     for (const [gid, agentKey] of dmByGroup) {
       const fresh = await pollNew(gid);
       for (const m of fresh) {
@@ -327,16 +525,44 @@ async function tick() {
     }
     const freshMain = await pollNew(mainGroupId);
     const now = Date.now();
+    const isSelf = (m) => m.senderId === state.monitorUserId || m.senderUsername === 'agent.monitor'; // 双保险：判定档案里再验一次
     for (const m of freshMain) {
-      if (m.senderId === state.monitorUserId) continue; // 自己的报警不进窗口（防反馈环）
+      if (isSelf(m)) continue; // 自己的报警不进窗口（防反馈环）
       if (m.senderKind === 'agent') {
         if (isNoise(m)) continue; // 故障话术不算讨论
         agentMsgs.push({ at: Date.parse(m.createdAt) || now, name: m.senderName || m.senderUsername || '?', body: m.body || '' });
       } else {
+        if (handleOwnerCommand(m)) continue; // 调度台口令直达（开会/散会/台账/判定/状态）
         claimIfSoloMention(m);
       }
     }
     while (agentMsgs.length && now - agentMsgs[0].at > 3600000) agentMsgs.shift();
+
+    // 会议记账：会议开始之后的成员消息才算一轮（触发判定的那批不算）；
+    // 轮次用完/超时自动散会
+    const meeting = readMeeting();
+    if (meeting.active) {
+      if (now > Date.parse(meeting.endTime)) {
+        await closeMeeting('timeout');
+      } else {
+        const startedMs = Date.parse(meeting.startedAt);
+        let changed = false;
+        for (const m of freshMain) {
+          if (m.senderKind === 'agent' && !isSelf(m) && !isNoise(m) && Date.parse(m.createdAt) >= startedMs) {
+            meeting.usedRounds += 1;
+            changed = true;
+            log(`会议轮次 +1（第 ${meeting.usedRounds}/${meeting.maxRounds} 轮）：${m.senderUsername || '?'}：${String(m.body || '').slice(0, 30)}`);
+          }
+        }
+        if (meeting.usedRounds >= meeting.maxRounds) {
+          if (changed) writeMeeting(meeting);
+          await closeMeeting('budget');
+        } else if (changed) {
+          writeMeeting(meeting);
+        }
+      }
+    }
+
     if (now - state.lastTriggerAt > COOLDOWN_MS) {
       const discussion = detectDiscussion(now);
       if (discussion) await triggerDiscussion(discussion, now);
@@ -355,6 +581,7 @@ async function tick() {
 await ensureMonitorAgent();
 log(`启动：poll=${POLL_MS}ms window=${WINDOW_MS}ms cooldown=${COOLDOWN_MS}ms 判定脚本=${path.basename(VERDICT_SCRIPT)}`);
 log(`盯群：主群 ${mainGroupId} + 私聊 ${dmByGroup.size} 个；报警身份=${state.monitorToken ? '调度台（独立成员）' : '无（绑定失败，仅落盘）'}`);
+log(`会议：maxRounds=${MEETING_MAX_ROUNDS} timeout=${MEETING_TIMEOUT_MS}ms；备份=${backupCfg.enabled ? `每日（留${BACKUP_KEEP}份）` : '关'}`);
 let stopping = false;
 process.on('SIGINT', () => { stopping = true; try { alertWs?.close(); } catch {} saveState(); process.exit(0); });
 for (;;) {

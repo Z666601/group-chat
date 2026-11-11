@@ -757,7 +757,7 @@ try {
     });
     fs.writeFileSync(cfgPath, JSON.stringify({
       server: BASE,
-      monitor: { pollMs: 250, windowMs: 4000, cooldownMs: 10000 },
+      monitor: { pollMs: 250, windowMs: 4000, cooldownMs: 10000, meeting: { maxRounds: 3, timeoutMs: 2500 } },
       agents: [mkAgent('probea', '探针甲', '🅰️'), mkAgent('probeb', '探针乙', '🅱️')],
     }, null, 2));
     const PENV_M = {
@@ -770,9 +770,13 @@ try {
       GC_MONITOR_STATE: statePath,
       GC_DISCUSSION_DIR: discDir,
       GC_LEDGER_PATH: ledgerPath,
+      GC_MEETING_PATH: path.join(dir, 'meeting-mode.json'),
       GC_VERDICT_SCRIPT: stub,
       GC_POLL_MS: '250',
-      FAKE_VERDICT: JSON.stringify({ affected: true, reason: '自检固定判定', impacts: [{ agent: 'probea', task: '自检假任务', why: '固定样本' }] }),
+      FAKE_VERDICT: JSON.stringify({
+        affected: true, reason: '自检固定判定', impacts: [{ agent: 'probea', task: '自检假任务', why: '固定样本' }],
+        summary: '自检小结', assignments: [{ agent: 'probea', task: '自检分工' }],
+      }),
     };
     const drainM = (c) => {
       let out = '';
@@ -857,7 +861,7 @@ try {
     let alertMsg = null;
     for (let i = 0; i < 30; i++) {
       const r = await api(`/groups/${toks.groupId}/messages?limit=50`, { token: toks.ownerToken });
-      alertMsg = (r.data.messages || []).find((m) => String(m.body || '').startsWith('〔调度台〕')) || null;
+      alertMsg = (r.data.messages || []).find((m) => String(m.body || '').includes('判定影响在办任务')) || null;
       if (alertMsg) break;
       await new Promise((r2) => setTimeout(r2, 250));
     }
@@ -874,6 +878,50 @@ try {
     );
     const namesLeaked = ['探针甲', '探针乙', 'probea', 'probeb'].filter((n) => (alertMsg?.body || '').includes(n));
     check('报警文案不带成员名（防触发桥接器接话）', !!alertMsg && namesLeaked.length === 0, namesLeaked.join(','));
+
+    // ③b 会议模式：判定影响 → 自动开会；口令直达；超时自动散会并贴小结
+    const meetingPath = path.join(dir, 'meeting-mode.json');
+    let meeting = null;
+    for (let i = 0; i < 30; i++) {
+      try { meeting = JSON.parse(fs.readFileSync(meetingPath, 'utf8')); } catch {}
+      if (meeting?.active) break;
+      await new Promise((r2) => setTimeout(r2, 250));
+    }
+    check(
+      '判定影响后自动召开会议（议题来自讨论）',
+      !!meeting?.active && /深蓝/.test(meeting.topic) && meeting.startedBy === 'auto',
+      JSON.stringify(meeting ? { topic: meeting.topic, by: meeting.startedBy } : {}),
+    );
+    // 会议内成员发言（计入轮次，也给小结留素材）
+    await wsA.sendNow(toks.groupId, '会议中我先认领：深蓝方案我继续推进');
+    await api(`/groups/${toks.groupId}/messages`, { method: 'POST', token: toks.ownerToken, body: { text: '调度台 台账' } });
+    let ledgerReply = null;
+    for (let i = 0; i < 30; i++) {
+      const r = await api(`/groups/${toks.groupId}/messages?limit=50`, { token: toks.ownerToken });
+      ledgerReply = (r.data.messages || []).find((m) => m.senderUsername === 'agent.monitor' && String(m.body || '').startsWith('〔调度台〕在办任务清单')) || null;
+      if (ledgerReply) break;
+      await new Promise((r2) => setTimeout(r2, 250));
+    }
+    check('「调度台 台账」口令直达（零模型回台账摘要）', !!ledgerReply && /首页标题/.test(ledgerReply.body), (ledgerReply?.body || '').slice(0, 60));
+    let closed = null;
+    for (let i = 0; i < 40; i++) {
+      try { closed = JSON.parse(fs.readFileSync(meetingPath, 'utf8')); } catch {}
+      if (closed && !closed.active) break;
+      await new Promise((r2) => setTimeout(r2, 250));
+    }
+    check(
+      '会议超时自动散会',
+      !!closed && !closed.active && closed.closeReason === 'timeout',
+      JSON.stringify(closed ? { reason: closed.closeReason, rounds: closed.usedRounds } : {}),
+    );
+    let conclusionMsg = null;
+    for (let i = 0; i < 30; i++) {
+      const r = await api(`/groups/${toks.groupId}/messages?limit=50`, { token: toks.ownerToken });
+      conclusionMsg = (r.data.messages || []).find((m) => m.senderUsername === 'agent.monitor' && String(m.body || '').includes('会议小结')) || null;
+      if (conclusionMsg) break;
+      await new Promise((r2) => setTimeout(r2, 250));
+    }
+    check('散会后调度台贴会议小结', !!conclusionMsg && /自检小结/.test(conclusionMsg.body), (conclusionMsg?.body || '').slice(0, 60));
 
     // ④ 冷却防抖：冷却期内再起一轮讨论，不重复判定
     await wsA.sendNow(toks.groupId, '补充一句，深蓝要压到 8% 明度以下');

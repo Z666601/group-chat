@@ -8,7 +8,16 @@
   "monitor": {
     "pollMs": 2500,
     "windowMs": 120000,
-    "cooldownMs": 600000
+    "cooldownMs": 600000,
+    "meeting": {
+      "maxRounds": 12,
+      "timeoutMs": 600000
+    },
+    "backup": {
+      "enabled": true,
+      "keep": 7,
+      "dir": "data/backup"
+    }
   },
   "agents": [
     {

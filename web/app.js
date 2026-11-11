@@ -239,6 +239,7 @@ async function enterApp() {
   authView.hidden = true;
   appView.hidden = false;
   renderMe();
+  initNotifyToggle();
   connectSocket();
   await refreshGroups();
   const params = new URLSearchParams(location.search);
@@ -269,7 +270,8 @@ async function refreshGroups() {
     renderGroups();
     if (!state.currentGroupId && state.groups.length && !state.autoPicked) {
       state.autoPicked = true;
-      selectGroup(state.groups[0].id);
+      const first = state.groups.find((g) => !g.name.startsWith('私聊·')) || state.groups[0];
+      selectGroup(first.id);
       return;
     }
     if (state.currentGroupId && !state.groups.find((g) => g.id === state.currentGroupId)) {
@@ -286,9 +288,10 @@ async function refreshGroups() {
 function renderGroups() {
   const list = $('group-list');
   list.innerHTML = '';
-  $('group-count').textContent = state.groups.length ? `(${state.groups.length})` : '';
-  $('group-empty').hidden = state.groups.length > 0;
-  for (const g of state.groups) {
+  const visible = state.groups.filter((g) => !g.name.startsWith('私聊·'));
+  $('group-count').textContent = visible.length ? `(${visible.length})` : '';
+  $('group-empty').hidden = visible.length > 0;
+  for (const g of visible) {
     const li = document.createElement('li');
     const btn = document.createElement('button');
     btn.className = 'group-item';
@@ -322,6 +325,21 @@ function renderGroups() {
 }
 
 // ── 选择群 ───────────────────────────────────────────
+// 点头像私聊：私聊群不单独出现在会话列表里，点 agent 头像进入一对一
+function openDmWith(name) {
+  const dm = state.groups.find((g) => g.name === '私聊·' + name);
+  if (!dm) return;
+  toggleMembers(false);
+  selectGroup(dm.id);
+}
+window.__openDm = openDmWith;
+window.__refreshGroups = refreshGroups;
+window.__dmIndex = () => ({
+  dms: state.groups
+    .filter((g) => g.name.startsWith('私聊·'))
+    .map((g) => ({ name: g.name.slice(3), unread: Number(g.unread) || 0 })),
+});
+
 async function selectGroup(groupId) {
   if (state.currentGroupId === groupId) {
     closeSidebarOnMobile();
@@ -329,6 +347,8 @@ async function selectGroup(groupId) {
   }
   state.currentGroupId = groupId;
   state.topicFilter = null;
+  const selected = state.groups.find((g) => g.id === groupId);
+  if (selected) selected.unread = 0;
   updateTopicBar();
   cancelReply();
   renderGroups();
@@ -361,13 +381,18 @@ async function loadGroupDetail(groupId) {
 
 // 把当前群里已看到的最大 seq 上报给服务端（游标只前进不后退）
 function reportRead(groupId) {
-  if (!groupId || groupId !== state.currentGroupId || !state.ws) return;
+  if (!groupId || groupId !== state.currentGroupId) return;
   const msgs = state.messages.get(groupId) || [];
   const maxSeq = msgs.length ? msgs[msgs.length - 1].seq : 0;
   const sent = state.reportedRead.get(groupId) || 0;
   if (!maxSeq || maxSeq <= sent) return;
   state.reportedRead.set(groupId, maxSeq);
-  state.ws.send(JSON.stringify({ type: 'read', groupId, seq: maxSeq }));
+  // ws 断线时走 HTTP 兜底，否则服务端未读不推进、红点消不掉（游标只前进不后退）
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({ type: 'read', groupId, seq: maxSeq }));
+  } else {
+    api(`/groups/${groupId}/read`, { method: 'POST', body: { seq: maxSeq } }).catch(() => {});
+  }
   const me = state.members.find((m) => state.me && m.id === state.me.id);
   if (me) me.lastReadSeq = Math.max(Number(me.lastReadSeq || 0), maxSeq);
 }
@@ -381,6 +406,49 @@ async function ensureModelCatalog() {
   } catch {
     state.modelCatalog = [];
   }
+}
+
+// ── 桌面通知：@我 / 私聊 / 调度台报警，在窗口不可见时弹系统通知 ──
+function notifyEnabled() { return localStorage.getItem('gc-notify') === '1' && 'Notification' in window && Notification.permission === 'granted'; }
+
+function maybeNotify(m, gid) {
+  if (!notifyEnabled() || document.visibilityState === 'visible') return;
+  if (!state.me || m.senderId === state.me.id) return;
+  const text = String(m.body || '');
+  const names = [state.me.displayName, state.me.username].filter(Boolean);
+  const mentioned = names.some((n) => text.includes(n) || text.includes(`@${n}`));
+  const g = state.groups.find((x) => x.id === gid);
+  const isDm = !!g && /^私聊/.test(g.name || '');
+  const isDispatch = m.senderUsername === 'agent.monitor';
+  if (!mentioned && !isDm && !isDispatch) return;
+  const title = `${m.senderName || '某人'}${g ? ` · ${g.name}` : ''}`;
+  const n = new Notification(title, { body: text.slice(0, 120), tag: `gc-${gid}`, silent: false });
+  n.addEventListener('click', () => {
+    window.focus();
+    if (gid !== state.currentGroupId) selectGroup(gid).catch(() => {});
+    n.close();
+  });
+}
+
+function initNotifyToggle() {
+  const btn = $('btn-notify');
+  if (!btn) return;
+  const sync = () => btn.setAttribute('aria-pressed', localStorage.getItem('gc-notify') === '1' ? 'true' : 'false');
+  sync();
+  btn.addEventListener('click', async () => {
+    if (localStorage.getItem('gc-notify') === '1') {
+      localStorage.removeItem('gc-notify');
+      toast('桌面通知已关', 'info');
+      sync();
+      return;
+    }
+    if (!('Notification' in window)) return toast('此浏览器不支持桌面通知', 'error');
+    const perm = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+    if (perm !== 'granted') return toast('浏览器拒绝了通知权限', 'error');
+    localStorage.setItem('gc-notify', '1');
+    toast('桌面通知已开：@我 / 私聊 / 调度台报警会弹窗', 'success');
+    sync();
+  });
 }
 
 // 为某个 Agent 设置所用大模型
@@ -573,6 +641,11 @@ function buildMessage(m, prev) {
     ? m.senderAvatar
     : initials(m.senderName || m.senderUsername);
   av.setAttribute('aria-hidden', 'true');
+  if (m.senderKind === 'agent') {
+    av.style.cursor = 'pointer';
+    av.title = '点头像私聊 ' + (m.senderName || '');
+    av.addEventListener('click', () => openDmWith(m.senderName || ''));
+  }
 
   const main = document.createElement('div');
   const head = document.createElement('div');
@@ -1221,6 +1294,11 @@ function renderMembers() {
     const nm = document.createElement('span');
     nm.className = 'member-name';
     nm.textContent = (m.avatar && m.kind === 'agent' ? m.avatar + ' ' : '') + m.displayName + (m.id === state.me.id ? '（我）' : '');
+    if (m.kind === 'agent') {
+      nm.style.cursor = 'pointer';
+      nm.title = '点头像私聊';
+      nm.addEventListener('click', () => openDmWith(m.displayName));
+    }
     const role = document.createElement('span');
     role.className = 'member-role' + (m.kind === 'agent' ? ' agent' : '');
     role.textContent = m.kind === 'agent' ? '智能体' : m.role === 'owner' ? '群主' : '成员';
@@ -1471,6 +1549,7 @@ function handleServerEvent(msg) {
     case 'message': {
       const gid = msg.groupId;
       const added = addMessageToState(gid, msg.message);
+      maybeNotify(msg.message, gid);
       if (gid === state.currentGroupId && added) {
         renderMessages();
         renderHeader();

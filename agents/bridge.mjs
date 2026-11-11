@@ -56,11 +56,41 @@ if (!token) {
   console.error(`令牌文件里没有 ${key} 的令牌，请先运行 node agents/provision.mjs`);
   process.exit(1);
 }
-const groupId = tokensFile.groupId;
+const mainGroupId = tokensFile.groupId;
+const dmInfo = tokensFile.dm?.[key] || null;
+const dmGroupId = dmInfo?.groupId || null;
+const allGroups = [mainGroupId, dmGroupId].filter(Boolean);
 const SERVER = config.server || 'http://127.0.0.1:8787';
 
 const log = (...a) => console.log(`[${agent.key}]`, ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ── 桌面应用白名单：只认 apps.json 里列出的目标，绝不执行任意路径 ──
+let APP_LIST = [];
+try {
+  APP_LIST = JSON.parse(fs.readFileSync(path.join(__dirname, 'apps.json'), 'utf8')).apps || [];
+} catch {}
+
+function parseOpenCommand(text) {
+  const clean = String(text).replace(/^\s*@\S+\s*/, '').trim();
+  if (!clean || clean.length > 40) return null;
+  const m = clean.match(/^(?:帮我|给我|请|麻烦)?\s*(?:打开|开一下|启动|运行)\s*(?:一下)?\s*[:：]?\s*(.+)$/);
+  if (!m) return null;
+  const want = m[1].replace(/[。！!，,\s]+$/g, '').trim().toLowerCase();
+  if (!want) return null;
+  const hit = APP_LIST.find((a) =>
+    [a.name, ...(a.aliases || [])].some((n) => {
+      const k = String(n).toLowerCase();
+      return want === k || want.startsWith(k);
+    }),
+  );
+  return hit ? { name: hit.name, target: hit.target } : null;
+}
+
+function launchApp(target) {
+  const child = spawn('explorer.exe', [target], { windowsHide: true, detached: true, stdio: 'ignore' });
+  child.unref();
+}
 
 // ── 发言节流 / 防打架 ────────────────────────────────
 const guard = {
@@ -145,14 +175,18 @@ function looksLikeFailure(text) {
   return CMD_FAILURE_PATTERNS.some((re) => re.test(t));
 }
 
-function runCmd(spec, prompt, model) {
+function runCmd(spec, prompt, model, extraEnv = null) {
   return new Promise((resolve, reject) => {
     const argv = (spec.args || []).map((a) => a.replace('{prompt}', prompt));
     // 界面上为该 Agent 选中的模型 → 通过 CLI 参数透传
     if (model && Array.isArray(agent.modelArgs) && agent.modelArgs.length) {
       argv.unshift(...agent.modelArgs.map((a) => a.replace('{model}', model)));
     }
-    const child = spawn(spec.command, argv, { cwd: spec.cwd || ROOT, windowsHide: true });
+    const child = spawn(spec.command, argv, {
+      cwd: spec.cwd || ROOT,
+      windowsHide: true,
+      env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
+    });
     let out = '';
     let err = '';
     const timer = setTimeout(() => {
@@ -256,12 +290,14 @@ function runLocal(prompt, history) {
   ].join('\n');
 }
 
-async function think({ history, prompt }) {
+async function think({ history, prompt, gid = mainGroupId }) {
   const spec = agent.brain || {};
+  // 私聊上下文标记：大脑据此启用完整 agent 能力（能改文件跑命令），主群保持只读聊天
+  const dmEnv = gid === dmGroupId ? { GC_DM: '1' } : null;
   try {
     if (spec.type === 'local') return await runLocal(prompt, history);
     if (spec.type === 'http') return await runHttp(spec, prompt, currentModel);
-    return await runCmd(spec, prompt, currentModel);
+    return await runCmd(spec, prompt, currentModel, dmEnv);
   } catch (err) {
     // 降级链：主大脑挂掉（限流/超时/CLI 崩）时按 fallback 配置换通道重试一次，
     // 成功则以「（tag作答）」前缀发言，群里能看出这轮不是主模型答的。
@@ -271,7 +307,7 @@ async function think({ history, prompt }) {
     log('主大脑失败，尝试降级链：', String(err?.message || err).slice(0, 100));
     const text = fb.type === 'http'
       ? await runHttp(fb, prompt, currentModel)
-      : await runCmd(fb, prompt, currentModel);
+      : await runCmd(fb, prompt, currentModel, dmEnv);
     return `（${fb.tag || '降级通道'}作答）\n${text}`;
   }
 }
@@ -298,15 +334,23 @@ async function refreshModel() {
 }
 
 // ── 提示词构造 ───────────────────────────────────────
-function buildPrompt(history, trigger) {
+function buildPrompt(history, trigger, gid = mainGroupId, { queuedCount = 0 } = {}) {
+  const isDm = gid === dmGroupId;
   const convo = history
     .slice(-(config.contextMessages ?? 12))
     .map((m) => `${m.senderName || '某人'}${m.senderKind === 'agent' ? '（智能体）' : ''}：${m.body}`)
     .join('\n');
   return [
-    `你是「${agent.name}」，正在一个多智能体讨论群里参与讨论。`,
-    `群里还有：${(tokensFile.agentNames || []).filter((n) => n !== agent.name).join('、') || '其他成员'}。`,
-    `要求：用简体中文，控制在 120 字以内，直接给观点与理由，不要客套，不要复述别人的话。`,
+    isDm
+      ? `你是「${agent.name}」，正在和主人一对一私聊，只有你们两个人。主人的请求就是给你下达的任务：直接动手完成（你有完整的本机 agent 能力，可以读写文件、执行命令），做完汇报结果；聊不动手的事时正常对话。`
+      : `你是「${agent.name}」，正在一个多智能体讨论群里参与讨论。`,
+    ...(isDm ? [] : [`群里还有：${(tokensFile.agentNames || []).filter((n) => n !== agent.name).join('、') || '其他成员'}。`]),
+    ...(queuedCount > 1
+      ? [`（你处理上一个任务期间，这边又来了 ${queuedCount} 条消息，已包含在下面的最近对话里；请先回应最新的这条。）`]
+      : []),
+    isDm
+      ? `要求：用简体中文，直接交付结果与关键证据，不要客套；任务做不完就说明卡在哪。`
+      : `要求：用简体中文，控制在 120 字以内，直接给观点与理由，不要客套，不要复述别人的话。`,
     '',
     '—— 最近对话 ——',
     convo,
@@ -316,29 +360,135 @@ function buildPrompt(history, trigger) {
   ].join('\n');
 }
 
+// ── 会议模式：monitor 写 meeting-mode.json（唯一写方），桥 1s 缓存只读；
+// 会议期间成员间消息互相触发（不再要求点名），链长/冷却闸门照常生效 ──
+const MEETING_PATH = process.env.GC_MEETING_PATH || path.join(ROOT, 'data', 'meeting-mode.json');
+let meetingCache = { at: 0, active: false };
+function meetingActive() {
+  const now = Date.now();
+  if (now - meetingCache.at < 1000) return meetingCache.active;
+  try {
+    const m = JSON.parse(fs.readFileSync(MEETING_PATH, 'utf8'));
+    const active = !!m.active && Date.parse(m.endTime) > now;
+    if (active && !meetingCache.active) guard.agentChain = 0; // 开会瞬间重置链长，别让历史占额度
+    meetingCache = { at: now, active };
+  } catch {
+    meetingCache = { at: now, active: false };
+  }
+  return meetingCache.active;
+}
+
 // ── WebSocket ────────────────────────────────────────
 const wsUrl = `${SERVER.replace(/^http/, 'ws')}${config.wsPath || '/ws'}?agentToken=${encodeURIComponent(token)}`;
 let ws;
 let myUserId = null;
-let latestSeq = 0;
-const history = [];
+const latestSeqs = new Map();
+const histories = new Map();
+let subscribedOnce = false;
 let stopping = false;
+
+function historyOf(gid) {
+  let h = histories.get(gid);
+  if (!h) {
+    h = [];
+    histories.set(gid, h);
+  }
+  return h;
+}
+
+// 忙时排队：大脑还在跑上一件任务时，不丢新消息；跑完按群依次处理，同群只保留最新一条并计数
+const pendingTriggers = new Map(); // gid -> { message, count }
+let drainTimer = null;
 
 function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
-function postMessage(text) {
-  send({ type: 'send', groupId, clientMsgId: `ag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, text });
+function postMessage(text, gid = mainGroupId) {
+  send({ type: 'send', groupId: gid, clientMsgId: `ag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, text });
 }
 
-function signalTyping() {
-  send({ type: 'typing', groupId });
+function signalTyping(gid = mainGroupId) {
+  send({ type: 'typing', groupId: gid });
 }
 
 // 上报运行状态（成员面板状态牌用）：ok=在岗，unavailable=缺席并带原因
 function sendAgentStatus(status, reason = '') {
   send({ type: 'agent-status', status, reason: String(reason).slice(0, 120) });
+}
+
+function scheduleDrain() {
+  if (drainTimer) return;
+  drainTimer = setTimeout(() => {
+    drainTimer = null;
+    if (busy || !pendingTriggers.size) return;
+    const entry = pendingTriggers.entries().next().value;
+    if (!entry) return;
+    const [gid, item] = entry;
+    pendingTriggers.delete(gid);
+    log('处理排队消息：', item.count, '条，', gid === dmGroupId ? '私聊' : '主群');
+    processTrigger(item.message, gid, { queued: true, queuedCount: item.count }).catch(() => {});
+  }, 400);
+}
+
+async function processTrigger(m, gid, { queued = false, queuedCount = 0 } = {}) {
+  const text = m.body || '';
+  const isDm = gid === dmGroupId;
+  const hist = historyOf(gid);
+  const promptDigest = `${m.senderName || ''}：${text.slice(0, 80)}`;
+
+  // 打开桌面应用：只认人类消息 + apps.json 白名单
+  if (m.senderKind !== 'agent') {
+    const action = parseOpenCommand(text);
+    if (action) {
+      markReply();
+      log('执行打开：', action.name);
+      signalTyping(gid);
+      busy = true;
+      const t0 = Date.now();
+      try {
+        launchApp(action.target);
+        postMessage(`已打开：${action.name}`, gid);
+        sendAgentStatus('ok');
+        reportRun({ trigger: 'action', ok: true, durationMs: Date.now() - t0, promptDigest: `打开 ${action.name}` });
+      } catch (err) {
+        const reason = String(err?.message || err);
+        postMessage(`打开失败：${action.name}（${reason}）`, gid);
+        sendAgentStatus('unavailable', reason);
+        reportRun({ trigger: 'action', ok: false, error: reason, durationMs: Date.now() - t0, promptDigest: `打开 ${action.name}` });
+      } finally {
+        busy = false;
+        scheduleDrain();
+      }
+      return;
+    }
+  }
+
+  markReply();
+  log(queued ? '处理排队消息 ←' : '开始思考 ←', (m.senderName || '') + '：' + text.slice(0, 40));
+  signalTyping(gid);
+  busy = true;
+  const t0 = Date.now();
+  try {
+    const reply = await think({ history: hist, prompt: buildPrompt(hist, m, gid, { queuedCount }), gid });
+    postMessage(reply, gid);
+    sendAgentStatus('ok');
+    reportRun({ trigger: isDm ? 'dm' : 'mention', ok: true, durationMs: Date.now() - t0, promptDigest });
+    log('已发言', String(reply).slice(0, 40) + '…');
+  } catch (err) {
+    const reason = String(err?.message || err);
+    log('大脑失败：', reason);
+    sendAgentStatus('unavailable', reason);
+    reportRun({ trigger: isDm ? 'dm' : 'mention', ok: false, error: reason, durationMs: Date.now() - t0, promptDigest });
+    const now = Date.now();
+    if (agent.unavailable && now - guard.lastUnavailableAt > 60000) {
+      guard.lastUnavailableAt = now;
+      postMessage(agent.unavailable, gid);
+    }
+  } finally {
+    busy = false;
+    scheduleDrain();
+  }
 }
 
 function connect() {
@@ -356,7 +506,7 @@ function connect() {
       if (!msg.user) { log('鉴权失败：', msg.error); process.exit(2); }
       myUserId = msg.user.id;
       log('身份就绪：', msg.user.displayName);
-      send({ type: 'subscribe', groupId, sinceSeq: 0 });
+      for (const gid of allGroups) send({ type: 'subscribe', groupId: gid, sinceSeq: 0 });
       if (once) {
         await sleep(600);
         postMessage(once);
@@ -365,11 +515,15 @@ function connect() {
     }
 
     if (msg.type === 'subscribed') {
-      latestSeq = msg.latestSeq || 0;
-      log('已订阅，latestSeq =', latestSeq);
-      send({ type: 'read', groupId, seq: latestSeq });
+      const gid = msg.groupId || mainGroupId;
+      latestSeqs.set(gid, msg.latestSeq || 0);
+      log(gid === dmGroupId ? '已订阅私聊群，latestSeq =' : '已订阅，latestSeq =', msg.latestSeq || 0);
+      send({ type: 'read', groupId: gid, seq: msg.latestSeq || 0 });
       sendAgentStatus('ok');
-      await refreshModel();
+      if (!subscribedOnce) {
+        subscribedOnce = true;
+        await refreshModel();
+      }
       return;
     }
 
@@ -383,57 +537,42 @@ function connect() {
 
     if (msg.type === 'message') {
       const m = msg.message;
-      if (m.seq > latestSeq) latestSeq = m.seq;
-      send({ type: 'read', groupId, seq: m.seq });
-      history.push(m);
-      if (history.length > 60) history.shift();
+      const gid = m.groupId || mainGroupId;
+      if (m.seq > (latestSeqs.get(gid) || 0)) latestSeqs.set(gid, m.seq);
+      send({ type: 'read', groupId: gid, seq: m.seq });
+      const hist = historyOf(gid);
+      hist.push(m);
+      if (hist.length > 60) hist.shift();
       if (m.senderId === myUserId) return; // 不回自己
       const isAgentMsg = m.senderKind === 'agent';
-      if (isAgentMsg && agent.replyToAgents === false) return;
+      const meeting = meetingActive() && gid !== dmGroupId; // 会议只作用于主群，私聊不受影响
+      if (isAgentMsg && agent.replyToAgents === false && !meeting) return;
       if (isAgentMsg) {
         guard.agentChain += 1;
-        if (guard.agentChain > (config.maxAgentChain ?? 3)) return;
+        // 会议中不受链长限制（否则全员说满 3 句就集体沉默、会议僵死），由调度台的轮次上限+超时兜底
+        if (guard.agentChain > (config.maxAgentChain ?? 3) && !meeting) return;
       } else {
         guard.agentChain = 0;
       }
 
-      // 触发条件
+      // 触发条件：主群按 mention，私聊群任意人类消息都触发；会议期间成员消息互相触发
       const text = m.body || '';
-      const named = text.includes(agent.name) || text.includes(`@${agent.name}`);
-      const mode = agent.trigger || 'mention';
+      const names = [agent.name, ...(agent.aliases || [])].filter(Boolean);
+      const named = names.some((n) => text.includes(n) || text.includes(`@${n}`));
+      const isDm = gid === dmGroupId;
+      const mode = isDm ? 'all' : agent.trigger || 'mention';
       if (mode === 'mention' && !named && !isAgentMsg) return;
-      if (mode === 'mention' && isAgentMsg && !named) return;
-      if (!canReply()) return;
+      if (mode === 'mention' && isAgentMsg && !named && !meeting) return;
+      // 忙时排队，不丢消息：大脑跑完上一件任务后再处理，同群只留最新一条并计数
       if (busy) {
-        log('上一轮思考未结束，跳过本条触发');
+        const prev = pendingTriggers.get(gid);
+        const count = (prev?.count || 0) + 1;
+        pendingTriggers.set(gid, { message: m, count });
+        log('上一轮还没跑完，已排队（' + count + ' 条）：', text.slice(0, 30));
         return;
       }
-
-      markReply();
-      log('开始思考 ←', (m.senderName || '') + '：' + text.slice(0, 40));
-      signalTyping();
-      busy = true;
-      const t0 = Date.now();
-      const promptDigest = `${m.senderName || ''}：${text.slice(0, 80)}`;
-      try {
-        const reply = await think({ history, prompt: buildPrompt(history, m) });
-        postMessage(reply);
-        sendAgentStatus('ok');
-        reportRun({ trigger: 'mention', ok: true, durationMs: Date.now() - t0, promptDigest });
-        log('已发言', String(reply).slice(0, 40) + '…');
-      } catch (err) {
-        const reason = String(err?.message || err);
-        log('大脑失败：', reason);
-        sendAgentStatus('unavailable', reason);
-        reportRun({ trigger: 'mention', ok: false, error: reason, durationMs: Date.now() - t0, promptDigest });
-        const now = Date.now();
-        if (agent.unavailable && now - guard.lastUnavailableAt > 60000) {
-          guard.lastUnavailableAt = now;
-          postMessage(agent.unavailable);
-        }
-      } finally {
-        busy = false;
-      }
+      if (!canReply()) return;
+      processTrigger(m, gid, { queued: false }).catch(() => {});
       return;
     }
 

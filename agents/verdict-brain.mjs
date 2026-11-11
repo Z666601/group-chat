@@ -21,10 +21,27 @@ function readStdin() {
   });
 }
 
-function buildPrompt({ transcript, ledger }) {
+function buildPrompt({ transcript, ledger, mode }) {
   const tasks = (ledger?.tasks || [])
     .map((t) => `- [${t.id}] 成员=${t.agent} 任务=${t.title} 状态=${t.status}${t.digest ? ` 摘要=${String(t.digest).slice(0, 60)}` : ''}`)
     .join('\n') || '（台账为空：当前没有记录在案的在办任务）';
+  if (mode === 'conclusion') {
+    return [
+      '你是多智能体群聊的调度总结器。下面是一场成员讨论的发言记录和在办任务台账。',
+      '收拢这场讨论：达成了什么结论、要不要改在办任务、新的活儿归谁。',
+      '规则：只收拢讨论里明确说到的内容，不要替成员发明决定；没结论就如实说没结论。',
+      '',
+      '输出要求：只输出一行严格 JSON，不要解释、不要 markdown 代码块。格式：',
+      '{"summary": "<两句话以内的小结>", "assignments": [{"agent": "<成员>", "task": "<任务一句话>"}]}',
+      '没有明确分工时 assignments 为空数组。',
+      '',
+      '—— 在办任务台账 ——',
+      tasks,
+      '',
+      '—— 讨论发言记录 ——',
+      String(transcript || '').slice(-4000),
+    ].join('\n');
+  }
   return [
     '你是多智能体群聊的调度判定器。下面是一段成员间的讨论记录，以及各成员的在办任务台账。',
     '判断：这段讨论是否影响台账里的在办任务（会改需求、要求暂停、返工或重新分配就算影响）。',
@@ -44,12 +61,17 @@ function buildPrompt({ transcript, ledger }) {
 }
 
 function extractJson(text) {
-  const s = String(text).replace(/```json/gi, '```').replace(/```/g, '').trim();
+  // qoderclicn 偶发夹带 CLI 状态行（任务：…｜运行中 等），先按行去噪再抽 JSON
+  const cleaned = String(text)
+    .split('\n')
+    .filter((l) => !/^任务：.*｜/.test(l.trim()) && !/^当前进度：/.test(l.trim()) && !/^Shell cwd was reset/.test(l.trim()))
+    .join('\n');
+  const s = cleaned.replace(/```json/gi, '```').replace(/```/g, '').trim();
   const a = s.indexOf('{');
   const b = s.lastIndexOf('}');
   if (a < 0 || b <= a) throw new Error('输出里没有 JSON 对象');
   const obj = JSON.parse(s.slice(a, b + 1));
-  if (typeof obj.affected !== 'boolean') throw new Error('JSON 缺少 affected 布尔字段');
+  if (!('affected' in obj)) obj.affected = null; // conclusion 模式没有 affected 字段
   if (!Array.isArray(obj.impacts)) obj.impacts = [];
   return obj;
 }
