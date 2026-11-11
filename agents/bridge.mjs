@@ -471,7 +471,9 @@ async function processTrigger(m, gid, { queued = false, queuedCount = 0 } = {}) 
   const t0 = Date.now();
   try {
     const reply = await think({ history: hist, prompt: buildPrompt(hist, m, gid, { queuedCount }), gid });
-    postMessage(reply, gid);
+    // 话题继承：触发消息带 #话题（服务端解析在 m.topic），回复开头拼回同款标签，筛选条才能把讨论串起来
+    const topicPrefix = gid === mainGroupId && m.topic ? `#${m.topic} ` : '';
+    postMessage(topicPrefix + reply, gid);
     sendAgentStatus('ok');
     reportRun({ trigger: isDm ? 'dm' : 'mention', ok: true, durationMs: Date.now() - t0, promptDigest });
     log('已发言', String(reply).slice(0, 40) + '…');

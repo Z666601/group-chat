@@ -102,7 +102,9 @@ function serveStatic(req, res, url) {
   if (rel === '/' || rel === '') rel = '/index.html';
   if (rel === '/join') rel = '/index.html';
   const target = path.normalize(path.join(config.webDir, rel));
-  if (!target.startsWith(config.webDir)) {
+  // 边界用分隔符收口：裸 startsWith 会把 web-evil 这类同级目录也放进圈（前缀绕过）
+  const root = config.webDir.endsWith(path.sep) ? config.webDir : config.webDir + path.sep;
+  if (target !== config.webDir && !target.startsWith(root)) {
     return json(res, 403, { ok: false, error: { code: 'forbidden', message: '路径非法' } });
   }
   if (!fs.existsSync(target) || fs.statSync(target).isDirectory()) {

@@ -215,6 +215,47 @@ function cleanOut(text) {
 
 const FAILURE_RE = /not logged in|未登录|请先登录|API call failed|Connection error|^\s*Usage:/im;
 
+// GLM 直连（GLM_API_KEY 用户级环境变量）：qoderclicn 一跳 12-120s，直连 2-5s；
+// 失败落 qoderclicn 兜底，行为与原有链一致
+async function runGlm(promptText) {
+  const apiKey = process.env.GLM_API_KEY || '';
+  if (!apiKey) throw new Error('无 GLM_API_KEY');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60000);
+  try {
+    const res = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'glm-5.3-flash',
+        messages: [
+          { role: 'system', content: '你是一个角色扮演发言器。严格按用户给出的人设与输出要求，只输出要发进群的那条消息，不要输出思考过程。' },
+          { role: 'user', content: promptText },
+        ],
+        temperature: 0.85,
+        max_tokens: 800,
+      }),
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+    const data = JSON.parse(text);
+    const out = cleanOut(data?.choices?.[0]?.message?.content || '');
+    if (!out) throw new Error('GLM 直连返回空内容');
+    return out;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+try {
+  const out = await runGlm(fullPrompt);
+  process.stdout.write(out + '\n');
+  process.exit(0);
+} catch (err) {
+  console.error('GLM 直连失败，落 qoderclicn：', String(err?.message || err).slice(0, 120));
+}
+
 const child = spawn(QODER, argv, { cwd: HOME, windowsHide: true, env });
 let stdout = '';
 let stderr = '';

@@ -149,7 +149,7 @@ function verdictCount() {
 
 function handleOwnerCommand(m) {
   if (m.senderKind === 'agent') return false;
-  const mm = String(m.body || '').trim().match(/^调度台[，,：:\s]*(开会|散会|台账|最新?判定|状态)\s*[，,：:\s]?(.*)$/);
+  const mm = String(m.body || '').trim().match(/^调度台[，,：:\s]*(开会|散会|台账|最新?判定|状态|恢复)\s*[，,：:\s]?(.*)$/);
   if (!mm) return false;
   if (state.lastCommandMsgId === m.id) return true; // 幂等：同一条口令只执行一次
   state.lastCommandMsgId = m.id;
@@ -167,6 +167,16 @@ function handleOwnerCommand(m) {
       } else if (cmd === '台账') {
         const tasks = readLedger().tasks.filter((t) => t.status === 'active');
         await postAlert(`${ALERT_PREFIX}在办任务清单 ${tasks.length} 项：\n${tasks.map((t) => `· [${t.agent}] ${t.title}`).join('\n') || '（空）'}`);
+      } else if (cmd === '恢复') {
+        const ledger = readLedger();
+        const targets = ledger.tasks.filter((t) => t.status === 'paused' && (!arg || arg === '全部' || t.title.includes(arg) || t.agent.includes(arg)));
+        for (const t of targets) {
+          t.status = 'active';
+          t.resumedAt = new Date().toISOString();
+          t.updatedAt = t.resumedAt;
+        }
+        saveLedger(ledger);
+        await postAlert(`${ALERT_PREFIX}已恢复 ${targets.length} 项任务：\n${targets.map((t) => `· [${t.agent}] ${t.title}`).join('\n') || '（没有匹配的暂停任务）'}`);
       } else if (cmd === '判定' || cmd === '最新判定') {
         const f = latestVerdictFile();
         if (!f) return postAlert(`${ALERT_PREFIX}还没有判定档案。`);
@@ -495,11 +505,32 @@ async function triggerDiscussion(discussion, now) {
   if (!verdict) return; // 判定失败：档案里留 null，安静降级不报警
   log('判定：', JSON.stringify(verdict));
   if (!verdict.affected) return;
+  // 行动通道（方案 B）：判定影响 → 台账对应在办任务自动转 paused（检查点暂停，主人「调度台 恢复」即可回 active）
+  let paused = 0;
+  for (const imp of verdict.impacts || []) {
+    const impTask = String(imp.task || '');
+    const impAgent = String(imp.agent || '').toLowerCase();
+    if (!impTask && !impAgent) continue;
+    for (const t of ledger.tasks) {
+      if (t.status !== 'active') continue;
+      const hit = (impTask && (t.title.includes(impTask) || impTask.includes(t.title)))
+        || (impAgent && (t.agent === impAgent || t.agent.includes(impAgent)));
+      if (hit) {
+        t.status = 'paused';
+        t.pausedBy = 'auto-verdict';
+        t.pausedAt = new Date().toISOString();
+        t.updatedAt = t.pausedAt;
+        paused += 1;
+      }
+    }
+  }
+  if (paused) saveLedger(ledger);
   // 报警文案不带成员名（避免 @ 语义触发桥接器接话），细节全在档案里；
   // 以调度台身份发（非主人账号），消息开头自证是系统自动消息
   const sent = await postAlert(
-    `${ALERT_PREFIX}（系统自动消息，非主人发言）监听到成员讨论（${discussion.length} 条），判定影响在办任务 ${verdict.impacts.length} 项。` +
-    `理由：${String(verdict.reason || '').slice(0, 80)}。清单与讨论原文：${path.relative(ROOT, `${base}.verdict.json`)}。请主人过目定夺。`,
+    `${ALERT_PREFIX}（系统自动消息，非主人发言）监听到成员讨论（${discussion.length} 条），判定影响在办任务 ${verdict.impacts.length} 项` +
+    (paused ? `，已自动暂停 ${paused} 项（说「调度台 恢复 全部」可恢复）` : '') +
+    `。理由：${String(verdict.reason || '').slice(0, 80)}。清单与讨论原文：${path.relative(ROOT, `${base}.verdict.json`)}。请主人过目定夺。`,
   );
   if (!sent) {
     log('报警发送失败（调度台通道不可用），档案已落盘待查');

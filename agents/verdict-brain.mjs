@@ -130,6 +130,36 @@ function runQoderOnce(prompt) {
   });
 }
 
+// GLM 直连：比 qoderclicn 一跳快一个数量级，判定/小结的 JSON 服从度也更稳
+async function runGlm(prompt) {
+  const apiKey = process.env.GLM_API_KEY || '';
+  if (!apiKey) throw new Error('无 GLM_API_KEY');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
+  try {
+    const res = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'glm-5.3-flash',
+        messages: [
+          { role: 'system', content: '你是调度判定器，只输出一行严格 JSON，不输出任何其他内容。' },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.2,
+        max_tokens: 600,
+      }),
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 120)}`);
+    const data = JSON.parse(text);
+    return data?.choices?.[0]?.message?.content || '';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const input = JSON.parse(await readStdin() || '{}');
 const prompt = buildPrompt(input);
 let raw = '';
@@ -137,10 +167,14 @@ try {
   raw = await runDsh(prompt);
 } catch (e1) {
   try {
-    raw = await runQoderOnce(prompt);
+    raw = await runGlm(prompt);
   } catch (e2) {
-    console.error(`判定通道全失败：DSH=${String(e1?.message || e1).slice(0, 80)} / Qoder=${String(e2?.message || e2).slice(0, 80)}`);
-    process.exit(1);
+    try {
+      raw = await runQoderOnce(prompt);
+    } catch (e3) {
+      console.error(`判定通道全失败：DSH=${String(e1?.message || e1).slice(0, 60)} / GLM=${String(e2?.message || e2).slice(0, 60)} / Qoder=${String(e3?.message || e3).slice(0, 60)}`);
+      process.exit(1);
+    }
   }
 }
 try {

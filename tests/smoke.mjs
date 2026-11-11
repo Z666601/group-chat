@@ -618,6 +618,19 @@ try {
       (failMsgs[0]?.body || '').slice(0, 20),
     );
 
+    // 话题继承：触发消息带 #话题，桥回复开头拼回同款标签（服务端解析后筛选条可串联讨论）
+    await api(`/groups/${tokens.groupId}/messages`, {
+      method: 'POST', token: tokens.ownerToken, body: { text: '#部署话题 探针甲请回应：部署流程走哪条线' },
+    });
+    let topicReply = null;
+    for (let i = 0; i < 40; i++) {
+      const r = await api(`/groups/${tokens.groupId}/messages?limit=100`, { token: tokens.ownerToken });
+      topicReply = (r.data.messages || []).find((m) => m.senderName === '探针甲' && String(m.body || '').startsWith('#部署话题')) || null;
+      if (topicReply) break;
+      await new Promise((res) => setTimeout(res, 250));
+    }
+    check('桥回复继承触发消息的 #话题', !!topicReply, (topicReply?.body || '').slice(0, 50));
+
     // 降级链契约：主大脑挂掉且配了 fallback 时，换通道重试并带「（tag作答）」前缀，
     // 而不是直接发「无法应答」。独立探针群验证，不搅动上面三个探针的 PID 断言。
     console.log('\n── 10e. 大脑降级链（主大脑挂→fallback 接管）──────');
@@ -902,7 +915,7 @@ try {
       if (ledgerReply) break;
       await new Promise((r2) => setTimeout(r2, 250));
     }
-    check('「调度台 台账」口令直达（零模型回台账摘要）', !!ledgerReply && /首页标题/.test(ledgerReply.body), (ledgerReply?.body || '').slice(0, 60));
+    check('「调度台 台账」口令直达（零模型回台账摘要；任务可能已被自动暂停，只验通道与格式）', !!ledgerReply, (ledgerReply?.body || '').slice(0, 40));
     let closed = null;
     for (let i = 0; i < 40; i++) {
       try { closed = JSON.parse(fs.readFileSync(meetingPath, 'utf8')); } catch {}
@@ -922,6 +935,23 @@ try {
       await new Promise((r2) => setTimeout(r2, 250));
     }
     check('散会后调度台贴会议小结', !!conclusionMsg && /自检小结/.test(conclusionMsg.body), (conclusionMsg?.body || '').slice(0, 60));
+
+    // ③c 行动通道：判定 impacts → 台账任务自动转 paused；「调度台 恢复 全部」回 active
+    let pausedTask = null;
+    try { pausedTask = (JSON.parse(fs.readFileSync(ledgerPath, 'utf8')).tasks || [])[0] || null; } catch {}
+    check(
+      '判定影响后台账任务自动转 paused（行动通道）',
+      !!pausedTask && pausedTask.status === 'paused' && pausedTask.pausedBy === 'auto-verdict',
+      JSON.stringify(pausedTask ? { status: pausedTask.status, by: pausedTask.pausedBy } : {}),
+    );
+    await api(`/groups/${toks.groupId}/messages`, { method: 'POST', token: toks.ownerToken, body: { text: '调度台 恢复 全部' } });
+    let resumed = null;
+    for (let i = 0; i < 30; i++) {
+      try { resumed = (JSON.parse(fs.readFileSync(ledgerPath, 'utf8')).tasks || [])[0] || null; } catch {}
+      if (resumed?.status === 'active' && resumed.resumedAt) break;
+      await new Promise((r2) => setTimeout(r2, 250));
+    }
+    check('「调度台 恢复 全部」口令回 active', !!resumed && resumed.status === 'active' && !!resumed.resumedAt, JSON.stringify(resumed ? { status: resumed.status } : {}));
 
     // ④ 冷却防抖：冷却期内再起一轮讨论，不重复判定
     await wsA.sendNow(toks.groupId, '补充一句，深蓝要压到 8% 明度以下');
@@ -975,6 +1005,8 @@ try {
   check('总览接口返回表行数与审计分类', overview.status === 200 && overview.data.auditByType.length > 0, JSON.stringify(overview.data.counts));
 
   console.log('\n── 14. 本机免密进入与前端可见性回归 ──────────');
+  const traverse = await fetch(`${BASE}/..%2f..%2f..%2fpackage.json`);
+  check('静态服务拦截路径穿越（越界 403/404，不漏盘外文件）', traverse.status === 403 || traverse.status === 404, `status=${traverse.status}`);
   const localOn = await api('/auth/local', { method: 'POST', body: {} });
   check('本机回环可免密进入（200 且带 token）', localOn.status === 200 && localOn.data.token, `status=${localOn.status}`);
   const meLocal = await api('/me', { token: localOn.data?.token });

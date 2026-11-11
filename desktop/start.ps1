@@ -32,7 +32,20 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 }
 
 $adminFile = Join-Path $ROOT 'agents\.admin.token'
-if (-not (Test-Path $adminFile)) {
+# 令牌单一来源：.env 里有 ADMIN_TOKEN 就以它为准（与 start-dev 启动链一致），两条链不再各持一把锁
+$envFile = Join-Path $ROOT '.env'
+$envAdmin = $null
+if (Test-Path $envFile) {
+  $hit = Select-String -Path $envFile -Pattern '^\s*ADMIN_TOKEN\s*=\s*(.+?)\s*$' | Select-Object -First 1
+  if ($hit) { $envAdmin = $hit.Matches[0].Groups[1].Value }
+}
+if ($envAdmin) {
+  $cur = if (Test-Path $adminFile) { (Get-Content $adminFile -Raw).Trim() } else { '' }
+  if ($cur -ne $envAdmin) {
+    Set-Content -Path $adminFile -Value $envAdmin -NoNewline -Encoding UTF8
+    Log '已将 .env 的 ADMIN_TOKEN 同步到 agents\.admin.token（启动链令牌统一）'
+  }
+} elseif (-not (Test-Path $adminFile)) {
   node --no-warnings -e "const c=require('crypto');require('fs').writeFileSync('agents/.admin.token',c.randomBytes(24).toString('base64url'))"
   Log '已生成管理令牌文件 agents\.admin.token'
 }
@@ -75,7 +88,7 @@ Log '    服务已就绪 → http://127.0.0.1:8787'
 # ── 3/4 讨论组与 Agent 令牌（幂等）──────────────────
 Log '[3/4] 准备多智能体讨论组...'
 $env:ADMIN_TOKEN_FILE = $adminFile
-$prov = & node --no-warnings (Join-Path $ROOT 'agents/provision.mjs') --group='多智能体讨论组（演示）' 2>&1
+$prov = & node --no-warnings (Join-Path $ROOT 'agents/provision.mjs') --group='深蓝四席' 2>&1
 $prov | ForEach-Object { Log ('    ' + $_) }
 
 # ── 4/4 Agent 桥接器 ────────────────────────────────
