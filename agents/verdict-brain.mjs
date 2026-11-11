@@ -146,6 +146,8 @@ async function runGlm(prompt) {
           { role: 'system', content: '你是调度判定器，只输出一行严格 JSON，不输出任何其他内容。' },
           { role: 'user', content: prompt },
         ],
+        // 结构化判定不需要思考：开着会把 max_tokens 烧在 reasoning 上导致 content 为空
+        thinking: { type: 'disabled' },
         temperature: 0.2,
         max_tokens: 600,
       }),
