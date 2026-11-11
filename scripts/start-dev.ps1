@@ -1,4 +1,4 @@
-# 一键启动（Windows PowerShell）
+﻿# 一键启动（Windows PowerShell）
 # 用法：powershell -ExecutionPolicy Bypass -File scripts\start-dev.ps1
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot

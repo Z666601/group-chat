@@ -1,0 +1,6 @@
+{
+  "name": "group-chat-widget",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.js"
+}

@@ -21,16 +21,25 @@ const OWNER = argOf('owner', 'app_owner');
 const OWNER_PASSWORD = argOf('password', 'app_owner_pass_123');
 const GROUP_NAME = argOf('group', '多智能体讨论组');
 
-function adminToken() {
+function adminTokenCandidates() {
+  const out = [];
+  if (process.env.ADMIN_TOKEN) out.push(process.env.ADMIN_TOKEN.trim());
+  try {
+    const raw = fs.readFileSync(path.join(ROOT, '.env'), 'utf8');
+    const line = raw.split(/\r?\n/).find((l) => /^\s*ADMIN_TOKEN\s*=/.test(l));
+    if (line) out.push(line.slice(line.indexOf('=') + 1).trim());
+  } catch {}
   const f = process.env.ADMIN_TOKEN_FILE || path.join(__dirname, '.admin.token');
-  if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8').trim();
-  return process.env.ADMIN_TOKEN || '';
+  try {
+    if (fs.existsSync(f)) out.push(fs.readFileSync(f, 'utf8').trim());
+  } catch {}
+  return [...new Set(out.filter(Boolean))];
 }
 
-async function api(p, { method = 'GET', body, token, admin } = {}) {
+async function api(p, { method = 'GET', body, token, admin, adminToken } = {}) {
   const headers = { 'content-type': 'application/json' };
   if (token) headers.authorization = `Bearer ${token}`;
-  if (admin) headers['x-admin-token'] = adminToken();
+  if (admin) headers['x-admin-token'] = adminToken || adminTokenCandidates()[0] || '';
   const res = await fetch(SERVER + p, {
     method,
     headers,
@@ -40,6 +49,17 @@ async function api(p, { method = 'GET', body, token, admin } = {}) {
   let data;
   try { data = JSON.parse(text); } catch { data = { raw: text }; }
   return { status: res.status, data };
+}
+
+async function apiAdmin(p, opts = {}) {
+  const tokens = adminTokenCandidates();
+  if (!tokens.length) throw new Error('没有可用的管理令牌（.env 的 ADMIN_TOKEN 与 agents/.admin.token 都为空）');
+  let last;
+  for (const tk of tokens) {
+    last = await api(p, { ...opts, admin: true, adminToken: tk });
+    if (last.status !== 403) return last;
+  }
+  return last;
 }
 
 async function main() {
@@ -79,9 +99,8 @@ async function main() {
   const tokens = {};
   const agentNames = [];
   for (const a of config.agents) {
-    const r = await api('/api/admin/agents', {
+    const r = await apiAdmin('/api/admin/agents', {
       method: 'POST',
-      admin: true,
       body: {
         groupId: group.id,
         agentKey: a.key,
@@ -96,9 +115,40 @@ async function main() {
     console.log('  ✓ 已发放', a.key, '→', a.name);
   }
 
+  // 5) 一对一私聊群：每个 agent 一个二人群（管理员 + 该 agent）
+  const dm = {};
+  for (const a of config.agents) {
+    const dmName = `私聊·${a.name}`;
+    const list = await api('/api/groups', { token: ownerToken });
+    let dmGroup = (list.data.groups || []).find((g) => g.name === dmName);
+    if (!dmGroup) {
+      const created = await api('/api/groups', {
+        method: 'POST',
+        token: ownerToken,
+        body: { name: dmName, avatar: '💬' },
+      });
+      if (created.status !== 201) throw new Error(`建私聊群 ${dmName} 失败：` + JSON.stringify(created.data));
+      dmGroup = created.data.group;
+      console.log('  ✓ 已创建私聊群', dmName, dmGroup.id);
+    }
+    const r = await apiAdmin('/api/admin/agents', {
+      method: 'POST',
+      body: {
+        groupId: dmGroup.id,
+        agentKey: a.key,
+        displayName: a.name,
+        avatar: a.avatar,
+        supportsModel: false,
+      },
+    });
+    if (r.status !== 201) throw new Error(`发放 ${a.key} 私聊牌失败：` + JSON.stringify(r.data));
+    dm[a.key] = { groupId: dmGroup.id, groupName: dmName, token: r.data.token };
+    console.log('  ✓ 私聊牌', a.key, '→', dmName);
+  }
+
   fs.writeFileSync(
     TOKENS_PATH,
-    JSON.stringify({ server: SERVER, groupId: group.id, groupName: group.name, ownerToken, agentNames, tokens }, null, 2),
+    JSON.stringify({ server: SERVER, groupId: group.id, groupName: group.name, ownerToken, agentNames, tokens, dm }, null, 2),
   );
   console.log('\n令牌已写入', TOKENS_PATH);
   console.log('群组：', group.name, `(${group.id})`);
