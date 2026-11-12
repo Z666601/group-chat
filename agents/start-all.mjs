@@ -2,7 +2,7 @@
 // 用法：node agents/start-all.mjs [--only=hermes,ekko] [--once=开局语]
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -12,7 +12,34 @@ const ROOT = path.resolve(__dirname, '..');
 const CONFIG_PATH = process.env.GC_AGENTS_CONFIG || path.join(__dirname, 'agents.config.json');
 const TOKENS_PATH = process.env.GC_TOKENS_FILE || path.join(__dirname, '.tokens.local.json');
 const PIDS_PATH = process.env.GC_BRIDGE_PIDS || path.join(ROOT, 'data', 'bridge-pids.json');
-const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+
+// supervisor 起不来本身要变成调度台报警：看门狗死了群里必须有人喊一嗓子。
+// 必须先于 config 读取注册；exit 是同步事件，异步 fetch 发不出去——
+// 用 spawnSync 起一次性 node 代发（20s 超时兜底）。
+let startupFatal = null;
+process.on('exit', (code) => {
+  if (!startupFatal || code === 0) return;
+  try {
+    const tokensFile = JSON.parse(fs.readFileSync(TOKENS_PATH, 'utf8'));
+    const text = `〔调度台〕（系统自动消息）start-all 看门狗启动失败：${String(startupFatal).slice(0, 120)}。桥接器无人守护，请检查并手动重启。`;
+    spawnSync(process.execPath, ['-e', `
+      fetch(process.argv[1] + '/api/groups/' + process.argv[2] + '/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + process.argv[3] },
+        body: JSON.stringify({ text: process.argv[4] }),
+      }).then((r) => console.log('alert', r.status)).catch((e) => console.log('alert-fail', e.message));
+    `, tokensFile.server || 'http://127.0.0.1:8787', tokensFile.groupId, tokensFile.ownerToken, text], { timeout: 20000 });
+  } catch { /* 报警通道也挂了：只剩本条 stderr */ }
+});
+
+let config;
+try {
+  config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+} catch (err) {
+  // 配置坏是最典型的「supervisor 起不来」：报警后带码退出
+  startupFatal = `配置文件解析失败（${CONFIG_PATH}）：${err?.message || err}`;
+  process.exit(1);
+}
 
 const args = process.argv.slice(2);
 const argOf = (n, d) => {
@@ -35,15 +62,34 @@ function alive(pid) {
   }
 }
 
-// ── 单实例闸门（锁文件 + pid 探活）：双 supervisor 会把看门狗职责劈成两半，
-// 重启一次多留一个孤儿。锁里 pid 还活着 → 本实例立即退出；死锁（孤儿残留）→ 接管。
+// ── 单实例闸门（锁文件 + pid 探活 + cmdline 防呆）：双 supervisor 会把看门狗职责劈成两半，
+// 重启一次多留一个孤儿。锁里 pid 活着且确实是 start-all → 本实例退出；
+// pid 活但不是 start-all（pid 复用/异物占锁）→ 告警并接管；死锁（孤儿残留）→ 接管。
 // 探针群用 GC_STARTALL_LOCK 指向临时文件，与生产闸门互不干扰。
 const LOCK_PATH = process.env.GC_STARTALL_LOCK || path.join(ROOT, 'data', 'start-all.lock');
+
+// 查进程 cmdline（只在锁 pid 存活的罕见路径调用）；查不到返回 '' 视为无法确认
+function procCmdline(pid) {
+  try {
+    const r = spawnSync('powershell', ['-NoProfile', '-Command',
+      `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], { encoding: 'utf8', timeout: 15000 });
+    return String(r.stdout || '').trim();
+  } catch {
+    return '';
+  }
+}
+
 try {
   const prev = JSON.parse(fs.readFileSync(LOCK_PATH, 'utf8'));
   if (prev?.pid && prev.pid !== process.pid && alive(prev.pid)) {
-    console.log(`已有 start-all 实例在运行（pid ${prev.pid}），本实例退出。`);
-    process.exit(0);
+    const cmdline = procCmdline(prev.pid);
+    if (cmdline && !/start-all\.mjs/.test(cmdline)) {
+      // pid 被回收复用给了别的程序（或异物占锁）：不得误判为已有实例
+      console.log(`警告：start-all 锁指向存活进程 ${prev.pid}，但其命令行不是本仓 start-all（${cmdline.slice(0, 80)}），判定为陈旧锁，本实例接管。`);
+    } else {
+      console.log(`已有 start-all 实例在运行（pid ${prev.pid}），本实例退出。`);
+      process.exit(0);
+    }
   }
 } catch { /* 无锁或坏锁：本实例接管 */ }
 fs.mkdirSync(path.dirname(LOCK_PATH), { recursive: true });
@@ -173,7 +219,7 @@ process.on('SIGTERM', shutdown);
 // ── 周期自愈：巡检 pid 表，死掉的桥/监控按原 key 补起（detached）。
 // 单实例闸门挡掉了「重跑 start-all 补活」的旧路径，看门狗必须自己扛自愈；
 // 没有 online 校验——桥有 3 秒 WS 重连，pid 活着即视为在岗。
-const HEAL_MS = 60000;
+const HEAL_MS = Number(process.env.GC_HEAL_MS || 60000);
 let healing = false;
 setInterval(() => {
   if (healing) return;

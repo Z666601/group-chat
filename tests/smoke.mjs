@@ -480,6 +480,7 @@ try {
       GC_TOKENS_FILE: tokPath,
       GC_BRIDGE_PIDS: pidPath,
       GC_STARTALL_LOCK: path.join(dir, 'start-all.lock'),
+      GC_HEAL_MS: '1500',
       // PID 表断言按 3 条桥写死：监视器进程的闭环在 10f 单独验，这里整段关掉
       GC_MONITOR_OFF: '1',
       LOG_LEVEL: 'silent',
@@ -749,10 +750,109 @@ try {
     );
     check('补起的桥接器重新上线', healed);
 
+    // ── 周期自愈看门狗（不重启 supervisor）：杀一座桥 → GC_HEAL_MS 周期内按原 key 补起 ──
+    const preHeal = readPidTable();
+    const healVictim = preHeal.find((p) => p.key === 'probea');
+    const alienPid = server.pid; // 活着的非本配置进程（smoke server）
+    // 表里保留 probea（即将被杀成死条目）+ 塞一条非本配置的活进程条目
+    const tampered = [...preHeal, { key: '__alien__', pid: alienPid }];
+    fs.writeFileSync(pidPath, JSON.stringify({ startedAt: new Date().toISOString(), pids: tampered }, null, 2));
+    if (healVictim) {
+      try { process.kill(healVictim.pid); } catch {}
+    }
+    let healedByWatchdog = false;
+    let postHeal = [];
+    for (let i = 0; i < 24; i++) {
+      await new Promise((r) => setTimeout(r, 500)); // GC_HEAL_MS=1500
+      postHeal = readPidTable();
+      const na = postHeal.find((p) => p.key === 'probea');
+      const alien = postHeal.find((p) => p.key === '__alien__');
+      if (healVictim && na && na.pid !== healVictim.pid && (await onlineKeys()).has('probea')
+        && alien && alien.pid === alienPid) {
+        healedByWatchdog = true;
+        break;
+      }
+    }
+    check(
+      '周期自愈：桥死在巡检周期内按原 key 补起（pid 表更新）',
+      healedByWatchdog && !!postHeal.find((p) => p.key === 'probea' && !(healVictim && p.pid === healVictim.pid)),
+      JSON.stringify(postHeal.map((p) => `${p.key}:${p.pid}`)),
+    );
+    check(
+      '周期自愈：非本配置条目原样保留（不接管别人的进程）',
+      postHeal.some((p) => p.key === '__alien__' && p.pid === alienPid),
+      JSON.stringify(postHeal.find((p) => p.key === '__alien__') || {}),
+    );
+
+    // 清理自愈产物；__alien__ 条目的 pid 是 smoke server 本尊，绝不能杀
     for (const p of readPidTable()) {
+      if (p.key === '__alien__') continue;
       try { process.kill(p.pid); } catch {}
     }
     try { sa3.kill(); } catch {}
+    await new Promise((r) => setTimeout(r, 500)); // sa3 退位，锁随进程死
+
+    // ── 陈旧锁防呆 + supervisor 起不来报警 ──
+    const probeLock = path.join(dir, 'start-all.lock');
+    // (a) 陈旧锁：锁里 pid 根本不存在 → 照常接管启动（锁被新实例覆盖）
+    fs.writeFileSync(probeLock, JSON.stringify({ pid: 999999999, startedAt: 'stale' }));
+    const sa4 = spawn(process.execPath, ['--no-warnings', 'agents/start-all.mjs'], {
+      cwd: ROOT, env: PENV, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    });
+    spawnedPids.push(sa4.pid);
+    const sa4Out = drain(sa4);
+    await new Promise((r) => setTimeout(r, 2000));
+    const lockAfterA = (() => { try { return JSON.parse(fs.readFileSync(probeLock, 'utf8')); } catch { return {}; } })();
+    check(
+      '陈旧锁防呆：锁 pid 不存在时照常接管启动',
+      lockAfterA.pid && lockAfterA.pid !== 999999999,
+      `lock.pid=${lockAfterA.pid ?? 'missing'} out=${sa4Out().slice(0, 60).replace(/\s+/g, ' ')}`,
+    );
+    try { sa4.kill(); } catch {}
+    await new Promise((r) => setTimeout(r, 500));
+
+    // (b) 异物占锁：锁 pid 存活但命令行不是 start-all（smoke server）→ 告警接管，不误判退出
+    fs.writeFileSync(probeLock, JSON.stringify({ pid: server.pid, startedAt: 'alien' }));
+    const sa5 = spawn(process.execPath, ['--no-warnings', 'agents/start-all.mjs'], {
+      cwd: ROOT, env: PENV, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    });
+    spawnedPids.push(sa5.pid);
+    const sa5Out = drain(sa5);
+    let staleWarned = false;
+    for (let i = 0; i < 20; i++) {
+      if (/判定为陈旧锁/.test(sa5Out())) { staleWarned = true; break; }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    check(
+      '陈旧锁防呆：活锁非 start-all 进程时告警接管（不误判已有实例）',
+      staleWarned,
+      sa5Out().split('\n').filter((l) => l.includes('陈旧锁'))[0]?.slice(0, 80) || sa5Out().slice(0, 80),
+    );
+    try { sa5.kill(); } catch {}
+    await new Promise((r) => setTimeout(r, 500));
+
+    // (c) supervisor 起不来 → 调度台报警（坏配置场景，非零码退出+群里收到报警）
+    const badCfg = path.join(dir, 'bad.config.json');
+    fs.writeFileSync(badCfg, '{ 这不是 JSON !!!');
+    const sa6Env = { ...PENV, GC_AGENTS_CONFIG: badCfg };
+    let sa6Code = null;
+    await new Promise((resolve) => {
+      const c = spawn(process.execPath, ['--no-warnings', 'agents/start-all.mjs'], {
+        cwd: ROOT, env: sa6Env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+      });
+      spawnedPids.push(c.pid);
+      c.on('close', (code) => { sa6Code = code; resolve(); });
+      setTimeout(() => { try { c.kill(); } catch {} resolve(); }, 10000);
+    });
+    check('supervisor 起不来以非零码退出（配置坏场景）', sa6Code !== null && sa6Code !== 0, `code=${sa6Code}`);
+    let fatalAlert = null;
+    for (let i = 0; i < 30; i++) {
+      const r = await api(`/groups/${tokens.groupId}/messages?limit=50`, { token: tokens.ownerToken });
+      fatalAlert = (r.data.messages || []).find((m) => String(m.body || '').includes('start-all 看门狗启动失败')) || null;
+      if (fatalAlert) break;
+      await new Promise((r2) => setTimeout(r2, 250));
+    }
+    check('supervisor 起不来时群里收到调度台报警', !!fatalAlert && String(fatalAlert.body).includes('配置文件解析失败'), (fatalAlert?.body || '').slice(0, 60));
   }
 
   console.log('\n── 10f. 多脑调度闭环（监听钩子→判定→台账→报警）──────');
