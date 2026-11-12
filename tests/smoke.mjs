@@ -976,6 +976,17 @@ try {
     }
     check('「调度台 台账」口令直达（零模型回台账摘要；任务可能已被自动暂停，只验通道与格式）', !!ledgerReply, (ledgerReply?.body || '').slice(0, 40));
 
+    // 采纳口令（负向）：散言会的小结走散文兜底（conclusion=null），无可采纳分工要明说
+    await api(`/groups/${toks.groupId}/messages`, { method: 'POST', token: toks.ownerToken, body: { text: '调度台 采纳' } });
+    let claimReply = null;
+    for (let i = 0; i < 30; i++) {
+      const r = await api(`/groups/${toks.groupId}/messages?limit=50`, { token: toks.ownerToken });
+      claimReply = (r.data.messages || []).find((m) => m.senderUsername === 'agent.monitor' && String(m.body || '').includes('采纳')) || null;
+      if (claimReply && String(claimReply.body).includes('没有可采纳')) break;
+      await new Promise((r2) => setTimeout(r2, 250));
+    }
+    check('「调度台 采纳」无可采纳分工时明说（负向）', !!claimReply && claimReply.body.includes('没有可采纳'), (claimReply?.body || '').slice(0, 50));
+
     // ③c 行动通道：判定 impacts → 台账任务自动转 paused；「调度台 恢复 全部」回 active
     let pausedTask = null;
     try { pausedTask = (JSON.parse(fs.readFileSync(ledgerPath, 'utf8')).tasks || [])[0] || null; } catch {}

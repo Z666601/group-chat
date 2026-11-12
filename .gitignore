@@ -6,3 +6,10 @@ data/
 agents/.tokens.local.json
 agents/.admin.token
 agents/*.local.json
+
+# 运行态与工单回执（不入库）
+smoke_last.txt
+widget/.hwnd
+widget/.bounds.json
+监督反馈/
+data/start-all.lock

@@ -160,7 +160,7 @@ function verdictCount() {
 
 function handleOwnerCommand(m) {
   if (m.senderKind === 'agent') return false;
-  const mm = String(m.body || '').trim().match(/^调度台[，,：:\s]*(开会|散会|台账|最新?判定|状态|恢复)\s*[，,：:\s]?(.*)$/);
+  const mm = String(m.body || '').trim().match(/^调度台[，,：:\s]*(开会|散会|台账|最新?判定|状态|恢复|采纳)\s*[，,：:\s]?(.*)$/);
   if (!mm) return false;
   if (state.lastCommandMsgId === m.id) return true; // 幂等：同一条口令只执行一次
   state.lastCommandMsgId = m.id;
@@ -188,6 +188,46 @@ function handleOwnerCommand(m) {
         }
         saveLedger(ledger);
         await postAlert(`${ALERT_PREFIX}已恢复 ${targets.length} 项任务：\n${targets.map((t) => `· [${t.agent}] ${t.title}`).join('\n') || '（没有匹配的暂停任务）'}`);
+      } else if (cmd === '采纳') {
+        // 会议分工一键落台账：取最近一份会议小结的 assignments，成员名归一到 agent key
+        const files = fs.readdirSync(DISC_DIR).filter((f) => f.includes('conclusion')).sort();
+        let assigns = null;
+        let src = '';
+        if (files.length) {
+          src = files[files.length - 1];
+          const c = JSON.parse(fs.readFileSync(path.join(DISC_DIR, src), 'utf8'));
+          assigns = c?.conclusion?.assignments || [];
+        }
+        if (!assigns?.length) return postAlert(`${ALERT_PREFIX}最近一场会议小结没有可采纳的分工（或小结未生成）。`);
+        const agents = config.agents || [];
+        const toKey = (name) => {
+          const n = String(name || '').toLowerCase();
+          const hit = agents.find((a) => a.key === n || [a.name, ...(a.aliases || [])].some((x) => String(x).toLowerCase() === n));
+          return hit ? hit.key : n || 'unassigned';
+        };
+        const ledger = readLedger();
+        const now = new Date().toISOString();
+        const added = [];
+        for (const a of assigns) {
+          const key = toKey(a.agent);
+          if (!key) continue;
+          ledger.tasks.push({
+            id: `t_claim_${src.slice(8, 21)}_${added.length}`,
+            agent: key,
+            title: String(a.task || '').replace(/\s+/g, ' ').slice(0, 60),
+            digest: String(a.task || '').slice(0, 120),
+            status: 'active',
+            msgId: `claim_${src}_${added.length}`,
+            createdAt: now,
+            updatedAt: now,
+          });
+          added.push(key);
+        }
+        saveLedger(ledger);
+        await postAlert(
+          `${ALERT_PREFIX}已采纳 ${added.length} 项会议分工入台账（${path.basename(src)}）：\n` +
+          ledger.tasks.slice(-added.length).map((t) => `· [${t.agent}] ${t.title}`).join('\n'),
+        );
       } else if (cmd === '判定' || cmd === '最新判定') {
         const f = latestVerdictFile();
         if (!f) return postAlert(`${ALERT_PREFIX}还没有判定档案。`);

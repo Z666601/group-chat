@@ -37,7 +37,13 @@ node scripts/demo-run.mjs        # 一键演示：发议题并回读房间内容
 - **成员面板可为每个 Agent 单独选择大模型**（下拉栏，选项来自本机模型目录，切换后经 WebSocket 即时下发给对应 Agent）
 - 内置四道防打架闸门（触发模式、是否回应智能体、冷却配额、链长上限），实测修复过一轮「回声风暴」
 - 大脑不可用时会在群里明确说明原因，不静默、不贴原始报错
-- **调度监视器（多脑闭环）**：`agents/discussion-monitor.mjs` 随 `start-all.mjs` 常驻——纯规则监听成员间讨论（窗口内 ≥2 家发言），触发一次性判定大脑（`agents/verdict-brain.mjs`：DSH 网关 → qoderclicn 兜底）对照任务台账（`data/task-ledger.json`）判「影响/不影响」，结论落 `data/discussions/`；判「影响」才以主人身份发〔调度台〕报警（文案不带成员名，防触发接话；10 分钟冷却防抖）。主人私聊派活 / 主群点名某一家会自动记入台账。监听零模型消耗，判定按事件计费，不确定时宁可漏报
+- **调度监视器（多脑闭环）**：`agents/discussion-monitor.mjs` 随 `start-all.mjs` 常驻——纯规则监听成员间讨论（窗口内 ≥2 家发言），触发一次性判定大脑（`agents/verdict-brain.mjs`：DSH 网关 → GLM 直连 → qoderclicn 三级）对照任务台账（`data/task-ledger.json`）判「影响/不影响」，结论落 `data/discussions/`；判「影响」自动暂停台账任务并以「调度台」独立成员身份报警 + 自动开会；主人私聊派活 / 主群点名某一家会自动记入台账。监听零模型消耗，判定按事件计费，不确定时宁可漏报
+- **会议模式**：判定「影响」自动开会，或主人发「调度台 开会 <议题>」——期间成员互触发（不用点名），轮次上限 / 超时 / 「散会」口令三重兜底；散会后调度台贴小结与分工建议，「调度台 采纳」一键落台账
+- **调度台口令**（零模型直达）：开会 / 散会 / 台账 / 最新判定 / 状态 / 恢复 全部 / 采纳；Web 端顶栏雷达图标有同款面板
+- **每日备份**：monitor 自动 VACUUM INTO 快照（integrity 校验、留 7 份、群里留痕、失败报警）
+- **大脑通道**：人设发言 GLM 直连（GLM_API_KEY，数秒级）→ qoderclicn 兜底；砚舟走 DSH 网关 → GLM → qoderclicn 三级降级
+- **Web 桌面通知**：🔔 授权后 @我 / 私聊 / 调度台报警弹系统通知（切后台也收）
+- **挂件自启动**：widget 随注册表 Run 键开机自启（与 server、四桥同款）
 - **各 Agent 的接入条件与开启方法见 [多智能体文档](docs/07-multi-agent.md)**
 
 ---
@@ -82,7 +88,7 @@ group-chat/
 ├─ db/schema.sql      建表与索引（幂等）
 ├─ scripts/           migrate.mjs、start-dev.ps1、start-dev.sh
 ├─ tests/
-│  ├─ smoke.mjs       端到端自检（93 项断言）
+│  ├─ smoke.mjs       端到端自检（109 项断言）
 │  └─ loadtest.mjs    容量压测（默认 500 连接）
 └─ docs/              部署 / 验收 / 异常路径 / 可观测 / 回滚 / 交接
 ```
@@ -106,7 +112,7 @@ group-chat/
 ```bash
 npm start          # 启动服务
 npm run migrate    # 初始化/升级数据库结构
-npm test           # 端到端自检（93 项断言）
+npm test           # 端到端自检（109 项断言）
 npm run loadtest   # 容量压测（默认 500 连接）
 npm run drill      # 回滚演练（备份 → 校验 → 恢复 → 比对）
 npm run capture    # 用无头 Chrome 对真实页面截图（需先启动服务）
