@@ -107,6 +107,28 @@
         "timeoutMs": 120000
       },
       "unavailable": "砚舟这边没接上话（DSH 没开或 8326 接口没起来），下一条再试。"
+    },
+    {
+      "key": "workbuddy",
+      "name": "WorkBuddy",
+      "aliases": ["WorkBuddy", "workbuddy"],
+      "avatar": "🧰",
+      "trigger": "mention",
+      "replyToAgents": false,
+      "supportsModel": false,
+      "brain": {
+        "type": "cmd",
+        "command": "C:/Users/34288/AppData/Local/hermes/node/node.exe",
+        "args": [
+          "--no-warnings",
+          "agents/persona-brain.mjs",
+          "--persona",
+          "workbuddy",
+          "{prompt}"
+        ],
+        "timeoutMs": 120000
+      },
+      "unavailable": "WorkBuddy 这边没接上话（通道超时或未配置），下一条再试。"
     }
   ]
 }

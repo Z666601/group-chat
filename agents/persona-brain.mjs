@@ -35,7 +35,7 @@ if (!personaKey || !prompt) {
 }
 
 const key = personaKey.toLowerCase();
-const NAMES = { hermes: '赫尔', zcode: 'ZCode', lanky: '蓝鳍', dsh: '砚舟' };
+const NAMES = { hermes: '赫尔', zcode: 'ZCode', lanky: '蓝鳍', dsh: '砚舟', workbuddy: 'WorkBuddy' };
 const personaName = NAMES[key] || key;
 const blocks = [];
 
@@ -122,17 +122,26 @@ const GATEWAY_PRIMARY = {
   dsh: 'workbuddy/deepseek-v4.1-flash-sg',
   lanky: 'qoder/qfmodel',
 };
+const GATEWAY_URL = 'http://127.0.0.1:8326/v1/chat/completions';
+const GATEWAY_KEY_FILE = path.join(HOME, '.dsh/openai-gateway/api-key');
 
-async function runGateway(model, promptText) {
-  const keyFile = path.join(HOME, '.dsh/openai-gateway/api-key');
-  let apiKey = '';
-  try { apiKey = fs.readFileSync(keyFile, 'utf8').trim(); } catch {}
-  if (!apiKey) throw new Error('缺少 DSH 网关密钥');
+// 每角色模型自选（部署面试的落点，见 docs/08-ai-deploy.md；agents/*.local.json 已 gitignore）：
+// { "<key>": { "url": "OpenAI兼容端点", "apiKey": "密钥", "model": "模型id" }   ← 角色自有端口
+//          或 { "model": "ns/model" }                                        ← DSH 网关模型
+//          或 { "model": "glm模型名" }                                       ← GLM 直连换模型
+// 缺席的角色沿用 GATEWAY_PRIMARY / GLM 默认，行为同旧版。
+let MODEL_OVERRIDES = {};
+try { MODEL_OVERRIDES = JSON.parse(fs.readFileSync(path.join(__dirname, 'models.local.json'), 'utf8')); } catch {}
+
+async function runOpenAI({ url, apiKey, model }, promptText) {
+  if (!url) throw new Error('未指定端点');
+  if (!model) throw new Error('未指定模型');
+  if (!apiKey) throw new Error('缺少接口密钥');
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 120000);
   try {
-    const res = await fetch('http://127.0.0.1:8326/v1/chat/completions', {
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
@@ -149,23 +158,39 @@ async function runGateway(model, promptText) {
     const text = await res.text();
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
     let data;
-    try { data = JSON.parse(text); } catch { throw new Error('DSH 网关返回非 JSON'); }
+    try { data = JSON.parse(text); } catch { throw new Error('网关返回非 JSON'); }
     const out = cleanOut(data?.choices?.[0]?.message?.content || '');
-    if (!out) throw new Error('DSH 网关返回空内容');
+    if (!out) throw new Error('网关返回空内容');
     return out;
   } finally {
     clearTimeout(timer);
   }
 }
 
-if (GATEWAY_PRIMARY[key]) {
+// 路由：角色自有端点 > 模型覆盖（含 / 即 DSH 网关）> 代码内默认
+const wb = MODEL_OVERRIDES[key] || null;
+const custom = wb?.url ? { url: wb.url, apiKey: wb.apiKey || '', model: wb.model } : null;
+const gwModel = custom ? null : ((wb?.model && String(wb.model).includes('/')) ? wb.model : GATEWAY_PRIMARY[key] || '');
+const glmModel = (!custom && wb?.model && !String(wb.model).includes('/')) ? wb.model : null;
+
+if (custom) {
   try {
-    const out = await runGateway(GATEWAY_PRIMARY[key], fullPrompt);
+    const out = await runOpenAI(custom, fullPrompt);
     process.stdout.write(out + '\n');
     process.exit(0);
   } catch (err) {
-    // 降级链：网关/通道挂掉时落 GLM 直连（dsh.md 人设已加载），再不行落 qoderclicn
-    console.error(`DSH 网关(${GATEWAY_PRIMARY[key]})失败，落 GLM 直连：`, String(err?.message || err).slice(0, 160));
+    console.error(`自有端点(${custom.url})失败，落 GLM 直连：`, String(err?.message || err).slice(0, 160));
+  }
+} else if (gwModel) {
+  try {
+    let apiKey = '';
+    try { apiKey = fs.readFileSync(GATEWAY_KEY_FILE, 'utf8').trim(); } catch {}
+    const out = await runOpenAI({ url: GATEWAY_URL, apiKey, model: gwModel }, fullPrompt);
+    process.stdout.write(out + '\n');
+    process.exit(0);
+  } catch (err) {
+    // 降级链：网关/通道挂掉时落 GLM 直连（人设卡已加载），再不行落 qoderclicn
+    console.error(`DSH 网关(${gwModel})失败，落 GLM 直连：`, String(err?.message || err).slice(0, 160));
   }
 }
 
@@ -224,8 +249,8 @@ function cleanOut(text) {
 const FAILURE_RE = /not logged in|未登录|请先登录|API call failed|Connection error|^\s*Usage:/im;
 
 // GLM 直连（GLM_API_KEY 用户级环境变量）：qoderclicn 一跳 12-120s，直连 2-5s；
-// 失败落 qoderclicn 兜底，行为与原有链一致
-async function runGlm(promptText) {
+// 失败落 qoderclicn 兜底，行为与原有链一致。模型名可被 models.local.json 按角色覆盖
+async function runGlm(promptText, model = 'glm-5.3-flash') {
   const apiKey = process.env.GLM_API_KEY || '';
   if (!apiKey) throw new Error('无 GLM_API_KEY');
   const controller = new AbortController();
@@ -235,7 +260,7 @@ async function runGlm(promptText) {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: 'glm-5.3-flash',
+        model,
         messages: [
           { role: 'system', content: '你是一个角色扮演发言器。严格按用户给出的人设与输出要求，只输出要发进群的那条消息，不要输出思考过程。' },
           { role: 'user', content: promptText },
@@ -257,7 +282,7 @@ async function runGlm(promptText) {
 }
 
 try {
-  const out = await runGlm(fullPrompt);
+  const out = await runGlm(fullPrompt, glmModel || undefined);
   process.stdout.write(out + '\n');
   process.exit(0);
 } catch (err) {

@@ -25,7 +25,7 @@ powershell -ExecutionPolicy Bypass -File desktop\安装桌面快捷方式.ps1
 
 ## 多智能体讨论
 
-群聊支持把外部 AI 智能体（AutoClaw / Hermes / Ekko Studio / ZCode / 自建）作为**真实的群成员**拉进同一个房间讨论：
+群聊支持把外部 AI 智能体（AutoClaw / Hermes / Ekko Studio / ZCode / WorkBuddy / 自建）作为**真实的群成员**拉进同一个房间讨论：
 
 ```bash
 node agents/provision.mjs --group="多智能体讨论组（演示）"   # 建群 + 为每个 Agent 发放入群令牌（幂等）
@@ -133,6 +133,7 @@ npm run capture    # 用无头 Chrome 对真实页面截图（需先启动服务
 | [回滚方案](docs/05-rollback.md) | 版本回退、数据库回滚、备份恢复 |
 | [交接说明](docs/06-handoff.md) | 目录导览、模块职责、迭代建议、已知限制 |
 | [多智能体接入](docs/07-multi-agent.md) | Agent 身份/令牌机制、四个 Agent 的接入状态与开启方法、**每 Agent 模型下拉栏**、防打架闸门、失败兜底 |
+| [AI 代部署指南](docs/08-ai-deploy.md) | **把仓库交给 AI 部署的完整流程：先面试机主（端口/令牌/每成员模型自选）再安装**，答案落 `agents/models.local.json`，含实测模型命令与验收清单 |
 
 ---
 
