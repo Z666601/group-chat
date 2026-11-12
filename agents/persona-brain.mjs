@@ -115,7 +115,15 @@ const STRIP_ENV = [
 const env = { ...process.env };
 for (const k of STRIP_ENV) delete env[k];
 
-async function runDsh(promptText) {
+// 主人拍板（2026-11-12）：砚舟走 DSH 里 WorkBuddy 通道的额度；蓝鳍走 Qoder 的 qwen
+// （Qwen3.8-Flash 限时 0 Credits，比 qwen4 烧积分少，按「积分少的优先」选它）。
+// 都经 DSH 统一网关（127.0.0.1:8326，token-ledger 记账）；失败统一落 GLM 直连 → qoderclicn。
+const GATEWAY_PRIMARY = {
+  dsh: 'workbuddy/deepseek-v4.1-flash-sg',
+  lanky: 'qoder/qfmodel',
+};
+
+async function runGateway(model, promptText) {
   const keyFile = path.join(HOME, '.dsh/openai-gateway/api-key');
   let apiKey = '';
   try { apiKey = fs.readFileSync(keyFile, 'utf8').trim(); } catch {}
@@ -128,7 +136,7 @@ async function runDsh(promptText) {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: 'deepseek-account/deepseek-flash',
+        model,
         messages: [
           { role: 'system', content: '你是一个角色扮演发言器。严格按用户给出的人设与输出要求，只输出要发进群的那条消息，不要输出思考过程。' },
           { role: 'user', content: promptText },
@@ -150,14 +158,14 @@ async function runDsh(promptText) {
   }
 }
 
-if (key === 'dsh') {
+if (GATEWAY_PRIMARY[key]) {
   try {
-    const out = await runDsh(fullPrompt);
+    const out = await runGateway(GATEWAY_PRIMARY[key], fullPrompt);
     process.stdout.write(out + '\n');
     process.exit(0);
   } catch (err) {
-    // 降级链：8326 网关没起/挂掉时落 qoderclicn 兜底（dsh.md 人设已加载），不再直接「无法应答」
-    console.error('DSH 网关失败，落 qoderclicn 兜底：', String(err?.message || err).slice(0, 160));
+    // 降级链：网关/通道挂掉时落 GLM 直连（dsh.md 人设已加载），再不行落 qoderclicn
+    console.error(`DSH 网关(${GATEWAY_PRIMARY[key]})失败，落 GLM 直连：`, String(err?.message || err).slice(0, 160));
   }
 }
 
