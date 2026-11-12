@@ -479,6 +479,7 @@ try {
       GC_AGENTS_CONFIG: cfgPath,
       GC_TOKENS_FILE: tokPath,
       GC_BRIDGE_PIDS: pidPath,
+      GC_STARTALL_LOCK: path.join(dir, 'start-all.lock'),
       // PID 表断言按 3 条桥写死：监视器进程的闭环在 10f 单独验，这里整段关掉
       GC_MONITOR_OFF: '1',
       LOG_LEVEL: 'silent',
@@ -556,9 +557,9 @@ try {
     const sa2 = await runUntilExit('agents/start-all.mjs', [], 8000);
     check('第二轮 start-all 不重复起桥、自行退出', !sa2.timedOut && sa2.code === 0, `code=${sa2.code} timedOut=${sa2.timedOut}`);
     check(
-      '第二轮明确跳过存活的三个 key',
-      /已在运行，跳过：probea/.test(sa2.out) && /probeb\(pid/.test(sa2.out) && /probecmd\(pid/.test(sa2.out),
-      (sa2.out.match(/已在运行.*/) || [''])[0].slice(0, 70),
+      'start-all 单实例闸门：第二个实例检测到活锁立即退出（不静默并存）',
+      /已有 start-all 实例在运行/.test(sa2.out),
+      (sa2.out.match(/已有 start-all 实例.*/) || ['（闸门输出缺失）'])[0].slice(0, 60),
     );
     const pidAfter = readPidTable();
     check(
@@ -708,7 +709,8 @@ try {
       );
     }
 
-    // 掉线自愈：杀掉一个桥接器，下一轮只该补它，不能被「pid 表里有活的」一刀切跳过
+    // 掉线自愈（单实例语义）：桥死了 → 正确操作是重启 supervisor（旧的持锁先退，锁随死），
+    // 新实例接管并只补死掉的那座桥
     const beforeKill = readPidTable();
     check('两轮后 PID 表仍如实记录三条活口', beforeKill.length === 3, JSON.stringify(beforeKill));
     const victim = beforeKill.find((p) => p.key === 'probeb');
@@ -719,7 +721,11 @@ try {
       if (!(await onlineKeys()).has('probeb')) break;
       await new Promise((r) => setTimeout(r, 250));
     }
-    // 这一轮有活要干（补起 probeb），所以 start-all 会驻留守护子进程，不能等它退出
+    try { sa1.kill(); } catch {} // 旧 supervisor 退位，锁随进程死
+    for (let i = 0; i < 20; i++) {
+      try { process.kill(sa1.pid, 0); break; } catch { break; }
+    }
+    await new Promise((r) => setTimeout(r, 800)); // 给锁释放留时间
     const sa3 = spawn(process.execPath, ['--no-warnings', 'agents/start-all.mjs'], {
       cwd: ROOT, env: PENV, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
@@ -734,19 +740,19 @@ try {
     const revived = pid3.find((p) => p.key === 'probeb');
     const kept = pid3.find((p) => p.key === 'probea');
     check(
-      '桥接器掉线后下一轮只补起死掉的那个',
+      '桥接器掉线后下一轮只补起死掉的那个（其余桥 EPIPE 免疫存活）',
       /已在运行，跳过：probea/.test(sa3Out())
         && pid3.length === 3
         && !!revived && !!victim && revived.pid !== victim.pid
         && !!kept && kept.pid === beforeKill.find((p) => p.key === 'probea')?.pid,
-      (sa3Out().match(/已在运行.*/) || [''])[0].slice(0, 70),
+      `out=${sa3Out().slice(0, 160).replace(/\s+/g, ' ')} | pid3=${JSON.stringify(pid3.map((p) => p.key))}`,
     );
     check('补起的桥接器重新上线', healed);
 
     for (const p of readPidTable()) {
       try { process.kill(p.pid); } catch {}
     }
-    try { sa1.kill(); } catch {}
+    try { sa3.kill(); } catch {}
   }
 
   console.log('\n── 10f. 多脑调度闭环（监听钩子→判定→台账→报警）──────');

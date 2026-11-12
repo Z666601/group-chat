@@ -65,6 +65,12 @@ const SERVER = config.server || 'http://127.0.0.1:8787';
 const log = (...a) => console.log(`[${agent.key}]`, ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 父 supervisor（start-all）死后 stdout pipe 断裂，写日志会 EPIPE 崩掉进程——
+// 桥必须活得比父久，等下一个 supervisor 来接管
+for (const stream of [process.stdout, process.stderr]) {
+  if (stream && typeof stream.on === 'function') stream.on('error', () => {});
+}
+
 // ── 桌面应用白名单：只认 apps.json 里列出的目标，绝不执行任意路径 ──
 let APP_LIST = [];
 try {

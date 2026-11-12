@@ -35,6 +35,20 @@ function alive(pid) {
   }
 }
 
+// ── 单实例闸门（锁文件 + pid 探活）：双 supervisor 会把看门狗职责劈成两半，
+// 重启一次多留一个孤儿。锁里 pid 还活着 → 本实例立即退出；死锁（孤儿残留）→ 接管。
+// 探针群用 GC_STARTALL_LOCK 指向临时文件，与生产闸门互不干扰。
+const LOCK_PATH = process.env.GC_STARTALL_LOCK || path.join(ROOT, 'data', 'start-all.lock');
+try {
+  const prev = JSON.parse(fs.readFileSync(LOCK_PATH, 'utf8'));
+  if (prev?.pid && prev.pid !== process.pid && alive(prev.pid)) {
+    console.log(`已有 start-all 实例在运行（pid ${prev.pid}），本实例退出。`);
+    process.exit(0);
+  }
+} catch { /* 无锁或坏锁：本实例接管 */ }
+fs.mkdirSync(path.dirname(LOCK_PATH), { recursive: true });
+fs.writeFileSync(LOCK_PATH, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+
 function prevEntries() {
   try {
     return JSON.parse(fs.readFileSync(PIDS_PATH, 'utf8')).pids || [];
@@ -119,6 +133,7 @@ for (const a of toStart) {
     cwd: ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+    detached: true, // Windows 上不 detached 的子进程随父连坐（job object）——桥必须活得比 supervisor 久
   });
   child.stdout.on('data', (d) => process.stdout.write(`[${a.key}] ${d}`));
   child.stderr.on('data', (d) => process.stderr.write(`[${a.key}] ${d}`));
@@ -132,6 +147,7 @@ if (monitorToStart) {
     cwd: ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+    detached: true, // 同桥：不随 supervisor 连坐
   });
   monitorChild.stdout.on('data', (d) => process.stdout.write(`[monitor] ${d}`));
   monitorChild.stderr.on('data', (d) => process.stderr.write(`[monitor] ${d}`));

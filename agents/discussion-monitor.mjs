@@ -55,6 +55,11 @@ const SERVER = config.server || 'http://127.0.0.1:8787';
 const log = (...a) => console.log('[monitor]', ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 父 supervisor 死后 stdout pipe 断裂会 EPIPE 崩进程——监视器必须活得比父久
+for (const stream of [process.stdout, process.stderr]) {
+  if (stream && typeof stream.on === 'function') stream.on('error', () => {});
+}
+
 // ── 状态（重启不重扫历史：lastSeqs 落盘）──────────────
 let state = { lastSeqs: {}, lastTriggerAt: 0 };
 try { state = { ...state, ...JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')) }; } catch {}
