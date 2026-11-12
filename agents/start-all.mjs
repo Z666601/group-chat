@@ -170,4 +170,53 @@ const shutdown = () => {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
+// ── 周期自愈：巡检 pid 表，死掉的桥/监控按原 key 补起（detached）。
+// 单实例闸门挡掉了「重跑 start-all 补活」的旧路径，看门狗必须自己扛自愈；
+// 没有 online 校验——桥有 3 秒 WS 重连，pid 活着即视为在岗。
+const HEAL_MS = 60000;
+let healing = false;
+setInterval(() => {
+  if (healing) return;
+  healing = true;
+  try {
+    const entries = prevEntries();
+    let changed = false;
+    const next = [];
+    for (const e of entries) {
+      if (!e?.key || !Number.isInteger(e.pid)) { next.push(e); continue; }
+      if (alive(e.pid)) { next.push(e); continue; }
+      if (e.key === MONITOR_KEY) {
+        const c = spawn(process.execPath, ['--no-warnings', 'agents/discussion-monitor.mjs'], {
+          cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: true,
+        });
+        c.stdout.on('data', (d) => process.stdout.write(`[monitor] ${d}`));
+        c.stderr.on('data', (d) => process.stderr.write(`[monitor] ${d}`));
+        c.on('exit', (code) => console.log(`[monitor] 退出，code=${code}`));
+        children.push(c);
+        next.push({ key: MONITOR_KEY, pid: c.pid });
+        changed = true;
+        console.log(`自愈：调度监视器已补起（pid ${c.pid}）`);
+      } else if (config.agents.some((a) => a.key === e.key)) {
+        const c = spawn(process.execPath, ['--no-warnings', 'agents/bridge.mjs', `--key=${e.key}`], {
+          cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: true,
+        });
+        c.stdout.on('data', (d) => process.stdout.write(`[${e.key}] ${d}`));
+        c.stderr.on('data', (d) => process.stderr.write(`[${e.key}] ${d}`));
+        c.on('exit', (code) => console.log(`[${e.key}] 退出，code=${code}`));
+        children.push(c);
+        next.push({ key: e.key, pid: c.pid });
+        changed = true;
+        console.log(`自愈：桥接器 ${e.key} 已补起（pid ${c.pid}）`);
+      } else {
+        next.push(e); // 非本配置管理的条目，原样保留
+      }
+    }
+    if (changed) writePids(next);
+  } catch (err) {
+    console.log('自愈巡检失败：', String(err?.message || err).slice(0, 120));
+  } finally {
+    healing = false;
+  }
+}, HEAL_MS);
+
 console.log('桥接器全部启动，Ctrl+C 结束。');
